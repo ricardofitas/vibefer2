@@ -1,0 +1,10 @@
+[
+  {"name": "RTX 4060 Ti", "device": 0, "workers": 6, "binary": "../build/vibefer2",
+   "environment": {"CUDA_MPS_ACTIVE_THREAD_PERCENTAGE": "33"}},
+  {"name": "RTX 4060", "device": 1, "workers": 3, "binary": "../build/vibefer2",
+   "environment": {"CUDA_MPS_ACTIVE_THREAD_PERCENTAGE": "100"}},
+  {"name": "RTX 3070", "device": 2, "workers": 1, "binary": "../../vibefer2-ampere/build/vibefer2",
+   "environment": {"CUDA_MPS_PIPE_DIRECTORY": "/dev/null"}},
+  {"name": "RTX 2080 Ti", "device": 3, "workers": 2, "binary": "../../vibefer2-small32/build/vibefer2",
+   "environment": {"CUDA_MPS_ACTIVE_THREAD_PERCENTAGE": "100", "VIBEFER_2080TI_PROFILE": "small32"}}
+]

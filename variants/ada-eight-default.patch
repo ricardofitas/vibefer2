@@ -1,0 +1,14 @@
+--- a/src/transform_ocl.cpp
++++ b/src/transform_ocl.cpp
+@@ -102,9 +102,10 @@
+ 			}
+ 			cuda_gfn::generated_kernel kernel;
+ 			auto plan = profile->plan;
+-			if (info.name == "NVIDIA GeForce RTX 4060" && n == 17 && b >= 500000000 && b <= 525000000
++			if (info.name == "NVIDIA GeForce RTX 4060" && n == 17 && !(b & 1u) && b >= 500000000 && b <= 525000000
+ 			    && plan.pack == 4 && plan.length == 32768) {
+ 				const char *fields = std::getenv("VIBEFER_4060_CENTER_FIELDS");
++				if (!fields) fields = "8";
+ 				if (fields && (std::string(fields) == "8" || std::string(fields) == "9"))
+ 					plan.centered_fields = static_cast<unsigned>(*fields - '0');
+ 				const char *method = std::getenv("VIBEFER_4060_CENTER_METHOD");

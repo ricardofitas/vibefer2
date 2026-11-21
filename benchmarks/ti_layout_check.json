@@ -1,0 +1,69 @@
+{
+  "device": "RTX 4060 Ti",
+  "scalar_type": "little-endian uint32",
+  "capture_shape": [
+    7,
+    3,
+    64,
+    2048
+  ],
+  "axis_order": [
+    "state",
+    "prime",
+    "outer class",
+    "inner coefficient"
+  ],
+  "real_checkpoint_bases": [
+    518524154,
+    518529398,
+    518532314,
+    518539494,
+    518554790,
+    518555738
+  ],
+  "edge_case_states": 1,
+  "complete_native_path_residues_matching_GMP": 2359296,
+  "isolated_leaf_matches_per_variant": {
+    "128_threads": {
+      "checked_residues": 2752512,
+      "static_shared_bytes": 8192,
+      "registers_per_thread": 40
+    },
+    "256_threads": {
+      "checked_residues": 2752512,
+      "static_shared_bytes": 8192,
+      "registers_per_thread": 40
+    }
+  },
+  "captured_state_checks": {
+    "candidates": 7,
+    "matched_words": 2752512,
+    "fields": [
+      {
+        "p": 998244353,
+        "checked": 917504,
+        "max_raw_input": 3961567066,
+        "max_raw_output": 1996488468
+      },
+      {
+        "p": 985661441,
+        "checked": 917504,
+        "max_raw_input": 3916974801,
+        "max_raw_output": 1971319933
+      },
+      {
+        "p": 943718401,
+        "checked": 917504,
+        "max_raw_input": 3743465787,
+        "max_raw_output": 1887436529
+      }
+    ],
+    "raw_input_sha256": "586f9cf9606b3b42faf7a725d0a92428cd55bd42ad7604ebb769ccb9e913ea6e",
+    "raw_output_sha256": "1382f1cdebb0006f336870ef8b4bb6dfebc7dafca01b880e4598c6adf8a1a6fe"
+  },
+  "provenance": [
+    "https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/benchmarks/vibefer2/producao/cupqc2048/native-capture-oracle.json",
+    "https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-cupqc2048-20261120/summary.json",
+    "https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/benchmarks/vibefer2/producao/cupqc2048/medicao.md"
+  ]
+}

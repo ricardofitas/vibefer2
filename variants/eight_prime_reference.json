@@ -1,0 +1,171 @@
+{
+  "scope": "independent CPU oracle",
+  "primes": [
+    2147352577,
+    2146959361,
+    2146041857,
+    2145976321,
+    2144796673,
+    2144468993,
+    2144010241,
+    2143092737
+  ],
+  "L": 32768,
+  "radix": "B=b^4",
+  "signed_word_bound": "D=B/2+1",
+  "admission_rule": "4*L*D^2 < product(primes)",
+  "max_even_base_for_chosen_fields": 584876618,
+  "original_digits_per_residue": 131072,
+  "synthetic_carry_wrap_checks": [
+    {
+      "high_limb_bound": 16384,
+      "observed_max_abs_high": 1,
+      "carry_counts": {
+        "-1": 1,
+        "0": 32767,
+        "1": 0
+      },
+      "carry_across_zero": -1,
+      "observed_max_abs_word": "1",
+      "word_bound": "37984570312500000000000000000000001"
+    },
+    {
+      "high_limb_bound": 16384,
+      "observed_max_abs_high": 1,
+      "carry_counts": {
+        "-1": 0,
+        "0": 32767,
+        "1": 1
+      },
+      "carry_across_zero": 1,
+      "observed_max_abs_word": "1",
+      "word_bound": "37984570312500000000000000000000001"
+    }
+  ],
+  "checked_coefficients": 163840,
+  "results": [
+    {
+      "base": 518715906,
+      "pattern": "dense_boundaries",
+      "log2_P": 247.9884565963481,
+      "log2_required": 246.60295494835816,
+      "margin": 2.6126278684786555,
+      "steps": [
+        {
+          "factor": 2,
+          "duplication_bit": 1,
+          "carry": {
+            "high_limb_bound": 16384,
+            "observed_max_abs_high": 176,
+            "carry_counts": {
+              "-1": 4140,
+              "0": 24517,
+              "1": 4111
+            },
+            "carry_across_zero": 0,
+            "observed_max_abs_word": "36196955301775809344933580576136957",
+            "word_bound": "36198307606594160092175170866749449"
+          },
+          "coefficient_checks": 32768,
+          "packed_words": 32768,
+          "sha256": "606f53ade3e264e0ef9e3623fb45297065944c68248f33ad5305f667b4498bfb"
+        },
+        {
+          "factor": 1,
+          "duplication_bit": 0,
+          "carry": {
+            "high_limb_bound": 16384,
+            "observed_max_abs_high": 95,
+            "carry_counts": {
+              "-1": 4141,
+              "0": 24555,
+              "1": 4072
+            },
+            "carry_across_zero": 1,
+            "observed_max_abs_word": "36198176909163279089930509890599226",
+            "word_bound": "36198307606594160092175170866749449"
+          },
+          "coefficient_checks": 32768,
+          "packed_words": 32768,
+          "sha256": "7cdc8ae1740e896dcb57f613eb75e7eb976d3ddb7cbc75b4a12ceab39cf770e8"
+        }
+      ]
+    },
+    {
+      "base": 525000000,
+      "pattern": "dense_boundaries",
+      "log2_P": 247.9884565963481,
+      "log2_required": 246.7419374550213,
+      "margin": 2.372682634541205,
+      "steps": [
+        {
+          "factor": 2,
+          "duplication_bit": 1,
+          "carry": {
+            "high_limb_bound": 16384,
+            "observed_max_abs_high": 174,
+            "carry_counts": {
+              "-1": 4100,
+              "0": 24671,
+              "1": 3997
+            },
+            "carry_across_zero": 0,
+            "observed_max_abs_word": "37984144087706232379360207447820610",
+            "word_bound": "37984570312500000000000000000000001"
+          },
+          "coefficient_checks": 32768,
+          "packed_words": 32768,
+          "sha256": "0a5d952589e6af8c2c8a0accc5b6340b9a50acb8ae9a5388ea64dc6ca93649b8"
+        },
+        {
+          "factor": 1,
+          "duplication_bit": 0,
+          "carry": {
+            "high_limb_bound": 16384,
+            "observed_max_abs_high": 89,
+            "carry_counts": {
+              "-1": 4051,
+              "0": 24547,
+              "1": 4170
+            },
+            "carry_across_zero": 1,
+            "observed_max_abs_word": "37982062579494704144790972972000291",
+            "word_bound": "37984570312500000000000000000000001"
+          },
+          "coefficient_checks": 32768,
+          "packed_words": 32768,
+          "sha256": "4ead3cab7dee33dd95ce2d7fa13fdb6a5316a4a1a945bc2c095db278c916dabd"
+        }
+      ]
+    },
+    {
+      "base": 525000000,
+      "pattern": "uniform_positive_extreme",
+      "log2_P": 247.9884565963481,
+      "log2_required": 246.7419374550213,
+      "margin": 2.372682634541205,
+      "steps": [
+        {
+          "factor": 2,
+          "duplication_bit": 1,
+          "carry": {
+            "high_limb_bound": 16384,
+            "observed_max_abs_high": 16384,
+            "carry_counts": {
+              "-1": 0,
+              "0": 32768,
+              "1": 0
+            },
+            "carry_across_zero": 0,
+            "observed_max_abs_word": "147451",
+            "word_bound": "37984570312500000000000000000000001"
+          },
+          "coefficient_checks": 32768,
+          "packed_words": 32768,
+          "sha256": "8b3b2d1549d9681a0fec63dbb7fa5dfbbd4dbbc8cb1c72a910a49b5c27320d2a"
+        }
+      ]
+    }
+  ],
+  "cpu_wall_s": 2.9076724340011424
+}

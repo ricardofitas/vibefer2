@@ -1,0 +1,11 @@
+--- a/src/cuda/three_prime.h
++++ b/src/cuda/three_prime.h
+@@ -1178,7 +1178,7 @@
+         const bool ampere = calibrated && std::string(model) == "NVIDIA GeForce RTX 3070";
+         const bool ada_ti = calibrated && std::string(model) == "NVIDIA GeForce RTX 4060 Ti";
+         const unsigned steps = ada_ti ? 128 : (ampere ? 32 : 0);
+-        _pEngine->loadProgram((ada_ti ? "#define VF_WARP_LEAF 1\n" : "") + kernel_source(n, unsigned(root_bytes_*8), _pEngine->getNormWGsize(),
++        _pEngine->loadProgram(((ada_ti || ampere) ? "#define VF_WARP_LEAF 1\n" : "") + kernel_source(n, unsigned(root_bytes_*8), _pEngine->getNormWGsize(),
+                                             _pEngine->getMaxWorkGroupSize(), embedded_kernel));
+         if (steps) {
+             _pEngine->configureReusableBatch(steps);

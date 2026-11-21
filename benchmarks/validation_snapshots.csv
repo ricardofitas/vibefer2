@@ -1,0 +1,7 @@
+trial,device,observed_utc,main_pending,main_unmatched,main_valid,certificates_valid,certificates_pending,source
+A,fleet,2026-11-21T00:25:30+00:00,188,0,0,152,0,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-boundary64-20261121/resumo.json
+B,fleet,2026-11-21T01:48:14Z,202,2,0,112,0,https://github.com/ricardofitas/prime-grid-comm/blob/7dc3b24a2c1bfbb7b4b0a2516a350bcf7797daec/telemetry/experiments/arrefecimento-4060-20261120/B/primegrid-B-resumo.json
+C,fleet,2026-11-21T02:49:52Z,209,0,0,203,4,https://github.com/ricardofitas/prime-grid-comm/blob/0c3505d0558c288a4808ff7e62de770358aedf6c/telemetry/experiments/arrefecimento-4060-20261120/C/primegrid-C-resumo.json
+D,fleet,2026-11-21T04:16:11+00:00,200,0,0,244,1,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-oito-primos-20261121/validacao-D-resumo.json
+D,fleet,2026-11-21T11:45:33+00:00,200,0,0,245,0,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-oito-primos-20261121/validacao-CD-resumo.json
+C,RTX 2080 Ti,2026-11-21T11:45:33+00:00,53,0,0,24,0,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-oito-primos-20261121/validacao-CD-resumo.json

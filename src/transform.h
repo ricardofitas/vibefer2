@@ -1,0 +1,285 @@
+/*
+Copyright 2022, Yves Gallot
+
+genefer is free source code, under the MIT license (see LICENSE). You can redistribute, use and/or modify it.
+Please give feedback to the authors if improvement is realized. It is distributed in the hope that it will be useful.
+*/
+
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <sstream>
+
+#if defined(__aarch64__) && defined(__linux__)
+#include <sys/auxv.h>
+#endif
+
+#include "gint.h"
+#include "file.h"
+
+#if defined(__aarch64__) && !defined(__APPLE__)	// Apple M processors do not support SVE, ID_AA64PFR0_EL1 cannot be read (SIGILL)
+
+inline bool cpu_supports_sve()
+{
+#if defined(__linux__)
+	// See https://www.kernel.org/doc/Documentation/arm64/sve.txt
+	const unsigned long hwcaps = getauxval(AT_HWCAP);
+	return ((hwcaps & HWCAP_SVE) != 0);
+#elif defined(__clang__) && (__clang_major__ >= 19)
+	return __builtin_cpu_supports("sve");
+#else
+	// This does not guarantee the presence of the operating system interfaces
+	// Windows on Arm supports SVE then it should be OK
+	uint64_t r = 0;
+	__asm__ __volatile__ ("mrs %0, ID_AA64PFR0_EL1" : "=r"(r));
+	// SVE, bits [35:32] of ID_AA64PFR0_EL1
+	return (((r >> 32) & 0xf) >= 1);
+#endif
+}
+#endif
+
+class transform
+{
+protected:
+	enum class EKind { DTvec2, DTvec4, DTvec8, IBDTvec2, IBDTvec4, IBDTvec8, NTT2, NTT3, NTT3cpu, SBDTvec2, SBDTvec4, SBDTvec8 };
+
+private:
+	const size_t _size;
+	const uint32_t _n;
+	const uint32_t _b;
+	const EKind _kind;
+
+protected:
+	virtual void getZi(int32_t * const zi) const = 0;
+	virtual void setZi(const int32_t * const zi) = 0;
+
+public:
+	virtual void set(const uint32_t a) = 0;					// r_0 = a
+	virtual void squareDup(const bool dup) = 0;				// r_0 = r_0^2 or 2*r_0^2
+	virtual void squareMul(const int32_t a) = 0;			// r_0 = a*r_0^2
+	virtual void initMultiplicand(const size_t src) = 0;	// r_m = transform(r_src)
+	virtual void mul() = 0;									// r_0 *= r_m
+
+	virtual void copy(const size_t dst, const size_t src) const = 0;	// r_dst = r_src
+
+    // Update the Gerbicz-Li product in register 1. Preserve register 0 and
+    // leave its snapshot in register 2, including for checkpoint writers.
+    virtual void accumulateGerbicz() {
+        copy(2, 0);
+        mul(1);
+        copy(1, 0);
+        copy(0, 2);
+    }
+
+	virtual size_t getMemSize() const = 0;
+	virtual size_t getCacheSize() const = 0;
+
+	virtual bool readContext(file & cFile, const size_t num_regs) = 0;
+	virtual void saveContext(file & cFile, const size_t num_regs) const = 0;
+
+	virtual void synchronizeForCalibration() const {}
+	virtual double getError() const { return 0; }
+	virtual void info() const {}
+	// Proof generation uses short powers interleaved with multiplications.
+	virtual void setProofGeneration(bool) {}
+
+private:
+#if defined(GPU)
+	static transform * create_ocl(const uint32_t b, const uint32_t n, const bool isBoinc, const size_t device, const size_t num_regs,
+								  const cl_platform_id boinc_platform_id, const cl_device_id boinc_device_id, const bool verbose);
+#elif defined(__aarch64__)
+	static transform * create_neon(const uint32_t b, const uint32_t n, const size_t num_threads, const size_t num_regs, const bool checkError);
+#if !defined(__APPLE__)
+	static size_t get_sve_size();
+	static transform * create_sve128(const uint32_t b, const uint32_t n, const size_t num_threads, const size_t num_regs, const bool checkError);
+	static transform * create_sve256(const uint32_t b, const uint32_t n, const size_t num_threads, const size_t num_regs, const bool checkError);
+	static transform * create_sve512(const uint32_t b, const uint32_t n, const size_t num_threads, const size_t num_regs, const bool checkError);
+#endif
+#else
+	static transform * create_i32(const uint32_t b, const uint32_t n, const size_t num_regs);
+	static transform * create_sse2(const uint32_t b, const uint32_t n, const size_t num_threads, const size_t num_regs, const bool checkError);
+	static transform * create_sse4(const uint32_t b, const uint32_t n, const size_t num_threads, const size_t num_regs, const bool checkError);
+	static transform * create_avx(const uint32_t b, const uint32_t n, const size_t num_threads, const size_t num_regs, const bool checkError);
+	static transform * create_fma(const uint32_t b, const uint32_t n, const size_t num_threads, const size_t num_regs, const bool checkError);
+#if defined(__x86_64)
+	static transform * create_512(const uint32_t b, const uint32_t n, const size_t num_threads, const size_t num_regs, const bool checkError);
+#endif	
+#endif
+
+public:
+	transform(const size_t size, const uint32_t n, const uint32_t b, const EKind kind) : _size(size), _n(n), _b(b), _kind(kind) {}
+	virtual ~transform() {}
+
+protected:
+	size_t getSize() const { return _size; }
+	uint32_t getB() const { return _b; }
+	EKind getKind() const { return _kind; }
+
+	static size_t bitRev(const size_t i, const size_t n)
+	{
+		size_t r = 0;
+		for (size_t k = n, j = i; k > 1; k /= 2, j /= 2) r = (2 * r) | (j % 2);
+		return r;
+	}
+
+public:
+#if defined(GPU)
+	// Packed squaring can use additional channels; this describes the
+	// ordinary arithmetic and checkpoint representation.
+	unsigned getOrdinaryPrimeCount() const { return _kind == EKind::NTT2 ? 2 : 3; }
+	static transform * create_gpu(const uint32_t b, const uint32_t n, const bool isBoinc, const size_t device, const size_t num_regs,
+								  const cl_platform_id boinc_platform_id, const cl_device_id boinc_device_id, const bool verbose)
+	{
+		transform * const pTransform = transform::create_ocl(b, n, isBoinc, device, num_regs, boinc_platform_id, boinc_device_id, verbose);
+		if (pTransform == nullptr) throw std::runtime_error("OpenCL device not found");
+		return pTransform;
+	}
+#if defined(GENEFER_AUTOMATIC_CUDA)
+	static transform *create_original_gpu(uint32_t,uint32_t,bool,size_t,size_t,
+										  cl_platform_id,cl_device_id,bool);
+#endif
+#else
+	static transform * create_cpu(const uint32_t b, const uint32_t n, const size_t num_threads, const std::string & impl, const size_t num_regs,
+								  const bool checkError, std::string & ttype)
+	{
+		transform * pTransform = nullptr;
+
+#if defined(__aarch64__)
+#if !defined(__APPLE__)
+		const uint64_t size = cpu_supports_sve() ? transform::get_sve_size() : 0;
+		if ((size == 128) && (impl.empty() || (impl == "sve128")))
+		{
+			pTransform = transform::create_sve128(b, n, num_threads, num_regs, checkError);
+			ttype = "sve128";
+		}
+		else if ((size == 256) && (impl.empty() || (impl == "sve256")))
+		{
+			pTransform = transform::create_sve256(b, n, num_threads, num_regs, checkError);
+			ttype = "sve256";
+		}
+		else if ((size == 512) && (impl.empty() || (impl == "sve512")))
+		{
+			pTransform = transform::create_sve512(b, n, num_threads, num_regs, checkError);
+			ttype = "sve512";
+		}
+		else
+#endif
+		{
+			pTransform = transform::create_neon(b, n, num_threads, num_regs, checkError);
+			ttype = "neon";
+		}
+#else
+		__builtin_cpu_init();
+#if defined(__x86_64)
+		if (__builtin_cpu_supports("avx512f") && (impl.empty() || (impl == "512")))
+		{
+			pTransform = transform::create_512(b, n, num_threads, num_regs, checkError);
+			ttype = "512";
+		}
+		else
+#endif
+		if (__builtin_cpu_supports("fma") && (impl.empty() || (impl == "fma")))
+		{
+			pTransform = transform::create_fma(b, n, num_threads, num_regs, checkError);
+			ttype = "fma";
+		}
+		else if (__builtin_cpu_supports("avx") && (impl.empty() || (impl == "avx")))
+		{
+			pTransform = transform::create_avx(b, n, num_threads, num_regs, checkError);
+			ttype = "avx";
+		}
+		else if (__builtin_cpu_supports("sse4.1") && (impl.empty() || (impl == "sse4")))
+		{
+			pTransform = transform::create_sse4(b, n, num_threads, num_regs, checkError);
+			ttype = "sse4";
+		}
+		else if (__builtin_cpu_supports("sse2") && (impl.empty() || (impl == "sse2")))
+		{
+			pTransform = transform::create_sse2(b, n, num_threads, num_regs, checkError);
+			ttype = "sse2";
+		}
+#if !defined(CYCLO)
+		else if (__builtin_cpu_supports("avx2") && (impl.empty() || (impl == "i32")))
+		{
+			pTransform = transform::create_i32(b, n, num_regs);
+			ttype = "i32";
+		}
+#endif
+		else
+		{
+			if (impl.empty()) throw std::runtime_error("processor must support sse2");
+			std::ostringstream ss; ss << impl << " is not supported";
+			throw std::runtime_error(ss.str());
+		}
+#endif
+		return pTransform;
+	}
+#endif
+
+	static std::string implementations()
+	{
+		std::string impls;
+#if !defined(GPU)
+#if defined(__aarch64__)
+#if !defined(__APPLE__)
+		if (cpu_supports_sve())
+		{
+			const uint64_t size = transform::get_sve_size();
+			if (size == 128)      impls += " sve128";
+			else if (size == 256) impls += " sve256";
+			else if (size == 512) impls += " sve512";
+			else if (size > 0)
+			{
+				std::ostringstream ss; ss << "Warning: ARM SVE-" << size << " is not supported." << std::endl;
+				pio::print(ss.str());
+			}
+		}
+#endif
+		impls += " neon";
+#else
+		__builtin_cpu_init();
+#if defined(__x86_64)
+		if (__builtin_cpu_supports("avx512f")) impls += " 512";
+#endif
+		if (__builtin_cpu_supports("fma")) impls += " fma";
+		if (__builtin_cpu_supports("avx")) impls += " avx";
+		if (__builtin_cpu_supports("sse4.1")) impls += " sse4";
+		if (__builtin_cpu_supports("sse2")) impls += " sse2";
+#if !defined(CYCLO)
+		if (__builtin_cpu_supports("avx2")) impls += " i32";
+#endif
+#endif
+#endif
+		return impls;
+	}
+
+	void mul(const size_t src)
+	{
+		initMultiplicand(src);
+		mul();
+	}
+
+	void getInt(gint & g) const
+	{
+		if ((g.getSize() != (size_t(1) << _n)) || (g.getBase() != _b)) throw std::runtime_error("getInt");
+		getZi(g.data());
+		g.reset();
+	}
+
+	void setInt(gint & g)
+	{
+		if ((g.getSize() != (size_t(1) << _n)) || (g.getBase() != _b)) throw std::runtime_error("setInt");
+		g.balance();
+		setZi(g.data());
+	}
+
+	// void add1()
+	// {
+	// 	int32_t * const zi = new int32_t[size_t(1) << _n];
+	// 	getZi(zi);
+	// 	zi[0] += 1;
+	// 	setZi(zi);
+	// 	delete[] zi;
+	// }
+};

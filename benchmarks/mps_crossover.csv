@@ -1,0 +1,5 @@
+device,run_order,mode,aggregate_us,attached_workers,workers,squares_per_worker,source
+RTX 4060,1,plain,25.051513217924647,0,4,65536,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-meta-120/medicoes.json
+RTX 4060,2,mps,18.805916332242933,4,4,65536,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-meta-120/medicoes.json
+RTX 4060,3,mps,18.812911926270605,4,4,65536,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-meta-120/medicoes.json
+RTX 4060,4,plain,25.160140991208056,0,4,65536,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-meta-120/medicoes.json

@@ -1,0 +1,7 @@
+# Megaprime discovery record
+
+On 20 November 2026 the production host returned the GFN-17 Mega workunit for `518246744^131072 + 1`. The 1,142,232-digit discovery was entered into PrimePages on 21 November. PrimePages identifies Ricardo Fitas through proof code L6387 and lists the project and upstream tools. The entry recorded an entrance rank of 1,489 and its own verification state as “Untested” when checked on 21 November 2026. The independent registry status can change. [PrimePages entry](https://t5k.org/primes/page.php?id=142659) · [Finder profile](https://t5k.org/bios/page.php?id=6151)
+
+PrimeGrid's discovery notification to the finder ties the integer to workunit 1468449384. The public workunit gives result 2163659621, its return at 09:25:55 UTC on 20 November, and an elapsed time of 305.57 s. It displays the project application label. Local provenance comes from the deployment archive. The reporting host maps to the RTX 4060 Ti client. At 09:10 and 09:20 UTC it had six active Vibefer2 0.2 engine contexts, with the same release selected at 09:30 and six active again at 09:40. These observations support attribution to the Vibefer2 0.2 deployment. A task-specific executable digest was unavailable. [PrimeGrid workunit](https://www.primegrid.com/workunit.php?wuid=1468449384)
+
+The accompanying JSON contains the exact timestamps, the control binary digest, and immutable locators for the underlying deployment records. Access to the original operations archive may require permission. The notification and account credentials are not distributed.

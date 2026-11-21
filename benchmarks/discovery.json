@@ -1,0 +1,70 @@
+{
+  "retrieval_date_utc": "2026-11-21",
+  "candidate": {
+    "base": 518246744,
+    "exponent": 131072,
+    "n": 17,
+    "constant": 1,
+    "decimal_digits": 1142232
+  },
+  "registry": {
+    "database": "PrimePages",
+    "id": 142659,
+    "url": "https://t5k.org/primes/page.php?id=142659",
+    "prover_profile_url": "https://t5k.org/bios/page.php?id=6151",
+    "finder": "Ricardo Fitas",
+    "proof_code": "L6387",
+    "proof_code_url": "https://t5k.org/bios/code.php?code=L6387",
+    "submitted_utc": "2026-11-21T02:50:33Z",
+    "entrance_rank": 1489,
+    "verification_status_at_retrieval": "Untested"
+  },
+  "workunit": {
+    "project": "PrimeGrid",
+    "id": 1468449384,
+    "url": "https://www.primegrid.com/workunit.php?wuid=1468449384",
+    "name": "genefer17mega_340835170",
+    "result_id": 2163659621,
+    "reported_utc": "2026-11-20T09:25:55Z",
+    "elapsed_seconds": 305.57,
+    "cpu_seconds": 203.35,
+    "public_application": "Genefer 17 Mega v4.10 (OCLcudaGFN17MEGA)"
+  },
+  "deployment": {
+    "device": "NVIDIA GeForce RTX 4060 Ti",
+    "client": "boinc-client",
+    "selected_release": "0.2-abb09a6a3541",
+    "control_executable_sha256": "abb09a6a3541d3c9174f8fffc328ae9a44c92d0025099bc1bc3c2f8b4d6a9be8",
+    "attribution_method": "The public workunit identifies the reporting host. The local benchmark archive maps that host to boinc-client and that client to the RTX 4060 Ti. The samples below record the selected release and observed engine contexts. The archive does not contain an executable digest keyed to this particular result.",
+    "samples": [
+      {
+        "utc": "2026-11-20T09:10:01Z",
+        "selected_release": "0.2-abb09a6a3541",
+        "active_release_contexts": 6,
+        "archive_url": "https://github.com/ricardofitas/prime-grid-comm/blob/9c68f36e9478dda991e070ebea91b95fb74e7a4a/telemetry/history/2026-11-20/2026-11-20T091001Z.json"
+      },
+      {
+        "utc": "2026-11-20T09:20:01Z",
+        "selected_release": "0.2-abb09a6a3541",
+        "active_release_contexts": 6,
+        "archive_url": "https://github.com/ricardofitas/prime-grid-comm/blob/9c68f36e9478dda991e070ebea91b95fb74e7a4a/telemetry/history/2026-11-20/2026-11-20T092001Z.json"
+      },
+      {
+        "utc": "2026-11-20T09:30:01Z",
+        "selected_release": "0.2-abb09a6a3541",
+        "active_release_contexts": 0,
+        "archive_url": "https://github.com/ricardofitas/prime-grid-comm/blob/9c68f36e9478dda991e070ebea91b95fb74e7a4a/telemetry/history/2026-11-20/2026-11-20T093001Z.json"
+      },
+      {
+        "utc": "2026-11-20T09:40:01Z",
+        "selected_release": "0.2-abb09a6a3541",
+        "active_release_contexts": 6,
+        "archive_url": "https://github.com/ricardofitas/prime-grid-comm/blob/9c68f36e9478dda991e070ebea91b95fb74e7a4a/telemetry/history/2026-11-20/2026-11-20T094001Z.json"
+      }
+    ]
+  },
+  "sources": {
+    "archive_host_to_client_binding": "https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-ciclo-20261120T0919/primegrid.json.gz",
+    "archive_control_binary_digest": "https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-ciclo-20261120T0919/resumo.json"
+  }
+}

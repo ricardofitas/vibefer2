@@ -1,0 +1,56 @@
+--- a/src/transform_ocl.cpp
++++ b/src/transform_ocl.cpp
+@@ -82,7 +82,29 @@
+ 		if(info.max_threads<1024 || info.local_memory_bytes<49152
+ 		   || clGetDeviceInfo(gpu,0x4003,sizeof(warp),&warp,nullptr)!=CL_SUCCESS || warp!=32)
+ 			return stock();
+-		for(const auto *profile:cuda_gfn::profiles_for(info,n,b)) {
++        auto profile_device = info;
++        const char *selection = std::getenv("VIBEFER_2080TI_PROFILE");
++        if (selection && n == 17 && b >= (1u << 28) && b < (1u << 29) &&
++            info.name == "NVIDIA GeForce RTX 2080 Ti" && info.memory_bytes > (10ULL << 30) &&
++            info.memory_bytes <= (12ULL << 30)) {
++            const std::string which(selection);
++            if (which == "small32" || which == "small64" || which == "warp64") {
++                const unsigned bits = which == "small32" ? 32 : 64;
++                auto *value = create_general_small3(b,n,boinc,device,registers,platform_id,boinc_gpu,
++                                                    verbose,bits,cuda_gfn::embedded::three_prime);
++                if (!value) throw std::runtime_error("Unsupported Turing three-prime range");
++                if (verbose) pio::print("Turing GFN-17 calibration: " + which + "\n");
++                return value;
++            }
++            if (which == "packed9") {
++                // Select the existing nine-prime plan while checking actual Turing resources below.
++                profile_device.name = "NVIDIA GeForce RTX 4060";
++                profile_device.memory_bytes = 8ULL << 30;
++            } else if (which != "packed") {
++                throw std::runtime_error("Unknown Turing GFN-17 calibration profile");
++            }
++        }
++		for(const auto *profile:cuda_gfn::profiles_for(profile_device,n,b)) {
+ 			if(profile->kind==cuda_gfn::implementation::original_opencl) {
+ 				if(verbose) pio::print(std::string("GPU profile: ")+profile->name+" (original OpenCL)\n");
+ 				return stock();
+--- a/src/cuda/three_prime.h
++++ b/src/cuda/three_prime.h
+@@ -1173,10 +1173,16 @@
+         cl_ulong device_memory = 0;
+         const bool calibrated = n == 17 && b >= (1u << 28) && b < (1u << 29)
+             && clGetDeviceInfo(gpu, CL_DEVICE_NAME, sizeof(model), model, nullptr) == CL_SUCCESS
+-            && clGetDeviceInfo(gpu, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(device_memory), &device_memory, nullptr) == CL_SUCCESS
+-            && device_memory > (7ULL << 30) && device_memory <= (9ULL << 30);
+-        const bool ampere = calibrated && std::string(model) == "NVIDIA GeForce RTX 3070";
+-        const bool ada_ti = calibrated && std::string(model) == "NVIDIA GeForce RTX 4060 Ti";
++            && clGetDeviceInfo(gpu, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(device_memory), &device_memory, nullptr) == CL_SUCCESS;
++
++        const bool eight_gib = device_memory > (7ULL << 30) && device_memory <= (9ULL << 30);
++        const char *selected = std::getenv("VIBEFER_2080TI_PROFILE");
++        const bool turing = calibrated && selected && std::string(model) == "NVIDIA GeForce RTX 2080 Ti"
++            && device_memory > (10ULL << 30) && device_memory <= (12ULL << 30);
++        const bool ampere = (calibrated && eight_gib && std::string(model) == "NVIDIA GeForce RTX 3070")
++            || (turing && std::string(selected) == "small64");
++        const bool ada_ti = (calibrated && eight_gib && std::string(model) == "NVIDIA GeForce RTX 4060 Ti")
++            || (turing && (std::string(selected) == "small32" || std::string(selected) == "warp64"));
+         const unsigned steps = ada_ti ? 128 : (ampere ? 32 : 0);
+         _pEngine->loadProgram((ada_ti ? "#define VF_WARP_LEAF 1\n" : "") + kernel_source(n, unsigned(root_bytes_*8), _pEngine->getNormWGsize(),
+                                             _pEngine->getMaxWorkGroupSize(), embedded_kernel));

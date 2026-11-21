@@ -1,0 +1,8 @@
+device,comparison,arm,link,workers,steps_per_worker,blocks,aggregate_us,median_paired_throughput_change_pct,source
+RTX 3070,graph,graph lookup,Gen3 x1,1,32771,1,84.2531,,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-meta-120/medicoes.json
+RTX 3070,graph,data-driven graph 32,Gen3 x1,1,32771,1,38.1425,,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-meta-120/medicoes.json
+RTX 3070,MPS,plain,Gen3 x1,1,32768,1,42.662353515632304,,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-meta-120/medicoes.json
+RTX 3070,MPS,mps,Gen3 x1,2,32768,1,73.3229064941443,,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-meta-120/medicoes.json
+RTX 4060 Ti,third channel,stock,Gen4 x4,6,65536,6,13.385807262423592,0,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-oito-primos-20261121/ti-medicoes.json
+RTX 4060 Ti,third channel,integer,Gen4 x4,6,65536,6,13.558509264631944,-1.3369464394107133,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-oito-primos-20261121/ti-medicoes.json
+RTX 4060 Ti,third channel,fp32,Gen4 x4,6,65536,6,22.925912901557616,-41.64053518812968,https://github.com/ricardofitas/prime-grid-comm/blob/8716ffe56f8888494c9379e64735c6929561dcef/reports/data/vibefer2-oito-primos-20261121/ti-medicoes.json

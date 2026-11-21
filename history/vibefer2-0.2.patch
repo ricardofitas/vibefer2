@@ -1,0 +1,679 @@
+--- a/build.py
++++ b/build.py
+@@ -54,7 +54,10 @@
+         "--without-boinc", action="store_true", help="omit the BOINC interface"
+     )
+     parser.add_argument("--jobs", type=int, default=min(2, os.cpu_count() or 1))
++    parser.add_argument("--mps-compiler", type=Path, help="also build the independent Linux MPS OpenCL compiler at this path")
+     args = parser.parse_args()
++    if args.mps_compiler and not sys.platform.startswith("linux"):
++        parser.error("--mps-compiler requires Linux")
+     if args.jobs < 1:
+         parser.error("--jobs must be positive")
+     output = args.output.resolve()
+@@ -154,6 +157,14 @@
+         for name in loader_names
+     ]
+     opencl = locate(loader_candidates, "OpenCL loader")
++    if args.mps_compiler:
++        helper = args.mps_compiler.resolve()
++        if helper == output:
++            parser.error("The helper and GPU application must have distinct output paths")
++        helper.parent.mkdir(parents=True, exist_ok=True)
++        subprocess.run(compiler + ["-std=c++17", "-O2", "-I" + str(ROOT / "Khronos"),
++                                   str(ROOT / "tools/mps_compiler.cpp"), str(opencl),
++                                   "-o", str(helper)], check=True)
+     libraries = [
+         "-Wl,--start-group",
+         *libraries,
+--- a/kernels/src/three-prime.cl
++++ b/kernels/src/three-prime.cl
+@@ -2002,7 +2002,7 @@
+ 	backward_4o(pq, L1024S / 4, zk, L1024S / 4, Zi256, wi, sji / (L1024S / 4));
+ }
+ 
+-#if N_SZ == 524288u && VSIZE == 4 && RNS_SZ == 3
++#if (N_SZ == 524288u || defined(VF_WARP_LEAF)) && VSIZE == 4 && RNS_SZ == 3
+ INLINE uint4_32 tail_xor1(const uint4_32 v){
+  uint_32 x0,x1,x2,x3;
+  asm volatile("shfl.sync.bfly.b32 %0, %1, 1, 31, -1;" : "=r"(x0) : "r"(v.s0));
+@@ -2099,7 +2099,7 @@
+ #endif
+ void square2048(__global VTYPE * restrict const zg, __global const root_word_t * restrict const wg)
+ {
+-#if N_SZ == 524288u && VSIZE == 4 && RNS_SZ == 3
++#if (N_SZ == 524288u || defined(VF_WARP_LEAF)) && VSIZE == 4 && RNS_SZ == 3
+ 
+ 	DECLARE_VAR_2048();
+ 
+@@ -2743,6 +2743,29 @@
+ }
+ 
+ __kernel __attribute__((reqd_work_group_size(NORM_WG_SZ, 1, 1)))
++void normalize1batch(__global uint4_32 * restrict const z, __global int_64 * restrict const c,
++	const uint_32 b, const uint_32 b_inv, const int b_s, const int_32 dup_param,
++    const long2 pair, const long2 third, __global const uint *bits)
++{
++
++	const sz_t gid = (sz_t)get_global_id(0), lid = gid % NORM_WG_SZ;
++	__global uint4_32 * restrict const zi = &z[gid];
++	__local int_64 cl[NORM_WG_SZ];
++
++	const int4_32 r = normalize_1(zi, c, cl, gid, lid, b, b_inv, b_s, (bits[dup_param >> 5] >> (dup_param & 31)) & 1u, (long4)(pair,third));
++
++	barrier(CLK_LOCAL_MEM_FENCE);
++
++	normalize_2(zi, cl, lid, r, b, b_inv, b_s);
++}
++
++
++// Ordered before each exponent batch on the same CUDA stream.
++__kernel void upload_batch_bits(__global uint4 *bits, uint4 a, uint4 b) {
++    bits[0] = a;
++    bits[1] = b;
++}
++__kernel __attribute__((reqd_work_group_size(NORM_WG_SZ, 1, 1)))
+ void normalize1dup1(__global uint4_32 * restrict const z, __global int_64 * restrict const c,
+ 	const uint_32 b, const uint_32 b_inv, const int b_s, const int_32 dup_param,
+     const long2 pair, const long2 third)
+@@ -2839,3 +2862,45 @@
+ 	const sz_t gid = (sz_t)get_global_id(0);
+ 	zp[gid] = z[src + gid];
+ }
++
++// For seven internal boundaries in a captured eight-square graph, inject
++// c = q*b+r directly into the first two digits of the next transform.
++// At n=17 the conservative n<=22 coefficient admission covers digits <2b+3.
++// Regrouping those two powers of b preserves the represented integer modulo N.
++#if LN_SZ == 17 && VSIZE == 4
++__kernel ATTR_64()
++void forward64_carry(__global VTYPE *restrict const zg, __global const root_word_t *restrict const wg,
++                     __global const long *restrict const carry,
++                     const uint b_arg, const uint inverse_arg, const int shift_arg)
++{
++#ifdef CONST_BASE
++    const uint b=CONST_BASE, inverse=CONST_INV;
++    const int shift=CONST_SHIFT;
++#else
++    const uint b=b_arg, inverse=inverse_arg;
++    const int shift=shift_arg;
++#endif
++    const int lm = LN_SZ - LVSIZE - 6;
++    const uint s = 64/4;
++    __local VTYPE Z[4 * B_64 * CHUNK64];
++    DECLARE_VAR(B_64, CHUNK64);
++    DECLARE_VAR_FORWARD();
++    const uint stride=B_64 << lm;
++    VTYPE vals[4];
++    _loadg(4, vals, zi, stride);
++    if ((ki % NORM_WG_SZ) == 0) {
++        for (uint j=0; j<4; ++j) {
++            const long f=carry[(ki+j*stride)/NORM_WG_SZ];
++            uint q;
++            const uint r=barrett(abs(f),b,inverse,shift,&q);
++            const uint add0=f<0 && r ? pq.s0-r : r;
++            const uint add1=f<0 && q ? pq.s0-q : q;
++            vals[j].s0=addmod(vals[j].s0,add0,pq.s0);
++            vals[j].s1=addmod(vals[j].s1,add1,pq.s0);
++        }
++    }
++    _forward4_0(pq,g_f0[lid],vals);
++    _storel(4,&Z[i],B_64 * CHUNK64,vals);
++    FORWARD_64();
++}
++#endif
+--- a/src/cuda/device.h
++++ b/src/cuda/device.h
+@@ -2,6 +2,8 @@
+ #pragma once
+ #include "device_selection.h"
+ #include "driver_api.h"
++#include "mps_compiler.h"
++#include "validate_ptx.h"
+ #include <array>
+ #include <map>
+ #include <cstring>
+@@ -39,6 +41,74 @@
+     std::map<unsigned,CUgraphExec> batches_;
+     unsigned pending_=0, mask_=0;
+     bool capturing_=false;
++    kernel* boundaryKernel_=nullptr;
++    CUfunction boundaryInput_{},boundaryOutput_{};
++    unsigned batch_size_=0;
++    std::array<unsigned,8> exponent_words_{};
++    CUfunction normalize_zero_{}, normalize_batch_{}, upload_bits_{};
++    CUdeviceptr batch_bits_{};
++    CUgraphExec reusable_batch_{};
++
++    // Retain the existing NTT operations, order and parameters. Only the first
++    // carry pass reads its doubling bit from the buffer for this invocation.
++    void makeReusableBatch()
++    {
++        CUgraph graph{};
++        cuda_check(cuGraphCreate(&graph,0));
++        try {
++            CUgraphNode previous{};
++            for(unsigned step=0;step<batch_size_;++step) {
++                for(auto original:nodes_[0]) {
++                    CUDA_KERNEL_NODE_PARAMS parameters{};
++                    cuda_check(cuGraphKernelNodeGetParams(original,&parameters));
++                    std::array<void *,9> arguments{};
++                    if(parameters.func==normalize_zero_) {
++                        for(unsigned i=0;i<8;++i) arguments[i]=parameters.kernelParams[i];
++                        arguments[5]=&step;
++                        arguments[8]=&batch_bits_;
++                        parameters.func=normalize_batch_;
++                        parameters.kernelParams=arguments.data();
++                    }
++                    if (boundaryKernel_) {
++                        if (step + 1 != batch_size_ && parameters.func == boundaryInput_) continue;
++                        if (step != 0 && parameters.func == boundaryOutput_) {
++                            // The first and last boundary of an eight-bit graph keep
++                            // the original ABI, including materialized base-b carries.
++                            parameters.func = boundaryKernel_->function;
++                            parameters.kernelParams = boundaryKernel_->pointers.data();
++                            parameters.extra = nullptr;
++                        }
++                    }
++                    CUgraphNode next{};
++                    cuda_check(cuGraphAddKernelNode(&next,graph,previous?&previous:nullptr,previous?1:0,&parameters));
++                    previous=next;
++                }
++            }
++            cuda_check(cuGraphInstantiate(&reusable_batch_,graph,0));
++        } catch (...) {
++            cuGraphDestroy(graph);
++            throw;
++        }
++        cuda_check(cuGraphDestroy(graph));
++    }
++
++    void flushReusable()
++    {
++        if(pending_==batch_size_ && !nodes_[0].empty()) {
++            if(!reusable_batch_) makeReusableBatch();
++            void *args[]={&batch_bits_,exponent_words_.data(),exponent_words_.data()+4};
++            cuda_check(cuLaunchKernel(upload_bits_,1,1,1,1,1,1,0,stream_,args,nullptr));
++            cuda_check(cuGraphLaunch(reusable_batch_,stream_));
++        } else {
++            for(unsigned i=0;i<pending_;++i) {
++                unsigned bit=(exponent_words_[i/32]>>(i%32))&1u;
++                cuda_check(cuGraphLaunch(squares_[bit],stream_));
++            }
++        }
++        exponent_words_.fill(0);
++        pending_=0;
++    }
++
+ 
+     static kernel *handle(cl_kernel value) { return reinterpret_cast<kernel *>(value); }
+     static CUresult dependents(CUgraphNode node,CUgraphNode *next,size_t *count)
+@@ -73,6 +143,7 @@
+     void flush()
+     {
+         if(!pending_) return;
++        if(batch_size_) { flushReusable(); return; }
+         if(pending_<8)
+         {
+             for(unsigned i=0;i<pending_;++i) cuda_check(cuGraphLaunch(squares_[(mask_>>i)&1],stream_));
+@@ -89,6 +160,16 @@
+                 {
+                     CUDA_KERNEL_NODE_PARAMS parameters{};
+                     cuda_check(cuGraphKernelNodeGetParams(original,&parameters));
++                    if (boundaryKernel_) {
++                        if (i != 7 && parameters.func == boundaryInput_) continue;
++                        if (i != 0 && parameters.func == boundaryOutput_) {
++                            // The first and last boundary of an eight-bit graph keep
++                            // the original ABI, including materialized base-b carries.
++                            parameters.func = boundaryKernel_->function;
++                            parameters.kernelParams = boundaryKernel_->pointers.data();
++                            parameters.extra = nullptr;
++                        }
++                    }
+                     CUgraphNode next{};
+                     cuda_check(cuGraphAddKernelNode(&next,graph,previous?&previous:nullptr,previous?1:0,&parameters));
+                     previous=next;
+@@ -104,6 +185,10 @@
+     // No OpenCL buffers or queues are shared with CUDA.
+     std::string compile(const std::string &source)
+     {
++#ifdef __linux__
++        if(const char *helper=std::getenv("VIBEFER_MPS_COMPILER"))
++            return cuda_gfn::validate_opencl_ptx(vibefer_mps::compile(helper,opencl_device_,source));
++#endif
+         cl_context context=nullptr;
+         cl_program program=nullptr;
+         std::string binary;
+@@ -140,23 +225,7 @@
+         }
+         clReleaseProgram(program);clReleaseContext(context);
+         cuda_check(cuCtxSetCurrent(context_));
+-        if(binary.find(".version ")==std::string::npos||binary.find(".entry ")==std::string::npos)
+-            throw std::runtime_error("NVIDIA OpenCL compiler did not export PTX");
+-        // Every launch has global offset zero. CUDA does not initialize the
+-        // environment register that OpenCL uses for get_global_offset(0).
+-        size_t pos=0;
+-        while((pos=binary.find("%envreg3",pos))!=std::string::npos) {
+-            // Do not mistake another environment register, such as envreg30,
+-            // for the global-offset register. Unsupported registers stay below.
+-            if(pos+8<binary.size() && binary[pos+8]>='0' && binary[pos+8]<='9') {
+-                pos+=8;
+-                continue;
+-            }
+-            binary.replace(pos,8,"0");
+-            ++pos;
+-        }
+-        if(binary.find("%envreg")!=std::string::npos) throw std::runtime_error("Unsupported OpenCL PTX environment register");
+-        return binary;
++        return cuda_gfn::validate_opencl_ptx(std::move(binary));
+     }
+ public:
+     cuda_device(const platform &parent,size_t index,bool verbose)
+@@ -190,12 +259,22 @@
+     {
+         try { flush(); } catch(...) {}
+         if(stream_) cuStreamSynchronize(stream_);
++        if(reusable_batch_) cuGraphExecDestroy(reusable_batch_);
++        if(batch_bits_) cuMemFree(batch_bits_);
+         for(auto &entry:batches_) if(entry.second) cuGraphExecDestroy(entry.second);
+         for(auto graph:squares_) if(graph) cuGraphExecDestroy(graph);
+         for(auto graph:templates_) if(graph) cuGraphDestroy(graph);
+         if(module_) cuModuleUnload(module_);
+         if(stream_) cuStreamDestroy(stream_);
+         if(context_) cuDevicePrimaryCtxRelease(device_);
++    }
++    void configureReusableBatch(unsigned size) {
++        if(size<8 || size>256) throw std::runtime_error("Batch size outside [8,256]");
++        cuda_check(cuModuleGetFunction(&normalize_zero_,module_,"normalize1dup0"));
++        cuda_check(cuModuleGetFunction(&normalize_batch_,module_,"normalize1batch"));
++        cuda_check(cuModuleGetFunction(&upload_bits_,module_,"upload_batch_bits"));
++        cuda_check(cuMemAlloc(&batch_bits_,sizeof(exponent_words_)));
++        batch_size_=size;
+     }
+     void synchronizeForCalibration() { flush(); cuda_check(cuStreamSynchronize(stream_)); }
+     size_t getMaxWorkGroupSize() const { return 1024; }
+@@ -224,10 +303,20 @@
+             cuda_check(cuGraphInstantiate(&squares_[bit],graph,0));
+             remember(bit,graph);
+         }
++        if(batch_size_) {
++            exponent_words_[pending_/32]|=bit<<(pending_%32);
++            if(++pending_==batch_size_) flush();
++            return;
++        }
+         mask_|=bit<<pending_;
+         if(++pending_==8) flush();
+     }
+ protected:
++    void fuseBoundaries(cl_kernel first, cl_kernel second, cl_kernel fused) {
++        boundaryInput_ = handle(first)->function;
++        boundaryOutput_ = handle(second)->function;
++        boundaryKernel_ = handle(fused);
++    }
+     cl_mem _createBuffer(cl_mem_flags,size_t bytes,bool clear=true)
+     {
+         CUdeviceptr data;cuda_check(cuMemAlloc(&data,bytes));
+--- /dev/null
++++ b/src/cuda/mps_compiler.h
+@@ -0,0 +1,83 @@
++// Linux CUDA MPS clients can compile OpenCL kernels in an independent process.
++// Both transfers are private anonymous files. Neither uses application state paths.
++#pragma once
++#ifdef __linux__
++#include <array>
++#include <cerrno>
++#include <cstdio>
++#include <cstdlib>
++#include <fcntl.h>
++#include <memory>
++#include <spawn.h>
++#include <stdexcept>
++#include <string>
++#include <string_view>
++#include <sys/wait.h>
++#include <unistd.h>
++#include <vector>
++
++extern char **environ;
++
++namespace vibefer_mps {
++inline std::string uuid_hex(cl_device_id device) {
++    std::array<unsigned char,16> uuid{};
++    if (clGetDeviceInfo(device,0x106a,uuid.size(),uuid.data(),nullptr)!=CL_SUCCESS)
++        throw std::runtime_error("Cannot query the assigned OpenCL device UUID");
++    static constexpr char hex[]="0123456789abcdef";
++    std::string out;
++    for(auto byte:uuid) { out+=hex[byte>>4]; out+=hex[byte&15]; }
++    return out;
++}
++inline std::string compile(const char *helper,cl_device_id device,const std::string &source) {
++    if (helper[0]!='/') throw std::runtime_error("VIBEFER_MPS_COMPILER requires an absolute executable path");
++    struct close_file { void operator()(FILE *f) const { std::fclose(f); } };
++    using temp=std::unique_ptr<FILE,close_file>;
++    temp input(std::tmpfile()),output(std::tmpfile());
++    if(!input || !output) throw std::runtime_error("Cannot create private CUDA compiler files");
++    if(std::fwrite(source.data(),1,source.size(),input.get())!=source.size() ||
++       std::fflush(input.get()) || std::fseek(input.get(),0,SEEK_SET))
++        throw std::runtime_error("Cannot prepare OpenCL compiler input");
++    // Give the redirections distinct descriptors >= 3 even when the embedding
++    // process starts with stdin, stdout or stderr closed.
++    struct descriptor {
++        int fd;
++        explicit descriptor(FILE *file):fd(fcntl(fileno(file),F_DUPFD_CLOEXEC,3)) {}
++        ~descriptor() { if(fd>=0) close(fd); }
++    };
++    descriptor in(input.get()),out(output.get());
++    if(in.fd<0 || out.fd<0) throw std::runtime_error("Cannot duplicate the compiler files");
++    std::string uuid=uuid_hex(device);
++    char *argv[]={const_cast<char*>(helper),uuid.data(),nullptr};
++    std::vector<char*> env;
++    for(char **e=environ;*e;++e) {
++        if(std::string_view(*e).rfind("CUDA_MPS_PIPE_DIRECTORY=",0)!=0) env.push_back(*e);
++    }
++    // A private/nonexistent MPS pipe disables the child connection even when
++    // another user's default MPS service exists. Keep the same GPU visibility.
++    char pipe[]="CUDA_MPS_PIPE_DIRECTORY=/dev/null";
++    env.push_back(pipe); env.push_back(nullptr);
++    posix_spawn_file_actions_t actions;
++    int err=posix_spawn_file_actions_init(&actions);
++    if(err) throw std::runtime_error("Cannot initialize compiler process");
++    pid_t pid{};
++    err=posix_spawn_file_actions_adddup2(&actions,in.fd,STDIN_FILENO);
++    if(!err) err=posix_spawn_file_actions_adddup2(&actions,out.fd,STDOUT_FILENO);
++    if(!err) err=posix_spawn(&pid,helper,&actions,nullptr,argv,env.data());
++    posix_spawn_file_actions_destroy(&actions);
++    if(err) throw std::runtime_error("Cannot start the CUDA compiler helper: "+std::to_string(err));
++    int status=0;
++    pid_t done;
++    do { done=waitpid(pid,&status,0); } while(done<0 && errno==EINTR);
++    if(done!=pid || !WIFEXITED(status) || WEXITSTATUS(status)!=0)
++        throw std::runtime_error("The CUDA compiler helper failed");
++    if(std::fseek(output.get(),0,SEEK_END)) throw std::runtime_error("Cannot inspect compiler output");
++    const long size=std::ftell(output.get());
++    if(size<1 || size>64L*1024*1024 || std::fseek(output.get(),0,SEEK_SET))
++        throw std::runtime_error("Invalid PTX output length from compiler helper");
++    std::string ptx(size,'\0');
++    if(std::fread(ptx.data(),1,ptx.size(),output.get())!=ptx.size())
++        throw std::runtime_error("Could not read all generated PTX");
++    return ptx;
++}
++}
++#endif
+--- a/src/cuda/packed.h
++++ b/src/cuda/packed.h
+@@ -76,6 +76,20 @@
+         }
+         proof_generation_ = enabled;
+     }
++    void accumulateGerbicz() override {
++        if (!packed_current_) {
++            transform::accumulateGerbicz();
++            return;
++        }
++        // The accumulator uses the ordinary representation. Its scratch work
++        // never writes the packed buffers holding the running PRP residue.
++        materialize();
++        baseline::copy(2, 0);
++        baseline::initMultiplicand(1);
++        baseline::mul();
++        baseline::copy(1, 0);
++        baseline::copy(0, 2);
++    }
+     void squareDup(bool dup) override {
+         if (!packed_ || proof_generation_) {
+             baseline::squareDup(dup);
+--- a/src/cuda/packed_device.h
++++ b/src/cuda/packed_device.h
+@@ -1,5 +1,7 @@
+ #pragma once
+ #include "../transformGPU.h"
++#include "mps_compiler.h"
++#include "validate_ptx.h"
+ #include <array>
+ #include "driver_api.h"
+ #include <fstream>
+@@ -48,6 +50,10 @@
+             throw std::runtime_error(std::string(where) + ": " + std::to_string(code));
+     }
+     static std::string compile(cl_device_id device, const std::string &source) {
++#ifdef __linux__
++        if(const char *helper=std::getenv("VIBEFER_MPS_COMPILER"))
++            return cuda_gfn::validate_opencl_ptx(vibefer_mps::compile(helper,device,source));
++#endif
+         cl_int error;
+         cl_context context = clCreateContext(nullptr, 1, &device, nullptr, nullptr, &error);
+         checkCL(error, "packed compiler context");
+@@ -79,13 +85,7 @@
+             clReleaseContext(context);
+             program = nullptr;
+             context = nullptr;
+-            size_t at = 0;
+-            while ((at = binary.find("%envreg3", at)) != std::string::npos)
+-                binary.replace(at, 8, "0");
+-            if (binary.find("%envreg") != std::string::npos ||
+-                binary.find(".entry ") == std::string::npos)
+-                throw std::runtime_error("Unsupported packed PTX");
+-            return binary;
++            return cuda_gfn::validate_opencl_ptx(std::move(binary));
+         } catch (...) {
+             if (program)
+                 clReleaseProgram(program);
+--- a/src/cuda/three_prime.h
++++ b/src/cuda/three_prime.h
+@@ -280,6 +280,7 @@
+ 	cl_kernel _fwd4p = nullptr, _fwd8p = nullptr;
+ 	cl_kernel _mul2x2 = nullptr, _mul4 = nullptr, _mul8 = nullptr;
+ #endif
++	cl_kernel _fused17 = nullptr;
+ 	cl_kernel _forward64_0 = nullptr, _forward64_9 = nullptr, _forward64_11 = nullptr;
+ 	cl_kernel _backward64_0 = nullptr, _backward64_9 = nullptr, _backward64_11 = nullptr;
+ 	cl_kernel _forward256_0 = nullptr, _backward256_0 = nullptr, _forward1024_0 = nullptr, _backward1024_0 = nullptr;
+@@ -400,7 +401,7 @@
+ 	}
+ 
+ public:
+-	void createKernels(const uint32_t b, const crt_parameters &crt)
++	void createKernels(const uint32_t b, const crt_parameters &crt, bool fuse_boundaries)
+ 	{
+ #if defined(ocl_debug)
+ 		std::ostringstream ss; ss << "Create ocl kernels." << std::endl;
+@@ -479,7 +480,16 @@
+ 		_normalize2 = createNormalizeKernel("normalize2", b_ui, b_inv, b_s);
+ 		_mulscalar = createNormalizeKernel("mulscalar", b_ui, b_inv, b_s);
+ 
+-		CREATE_SETCOPY_KERNEL(set);
++		if (_ln==17 && b>=(1u<<28) && fuse_boundaries) {
++            _fused17=createTransformKernel("forward64_carry");
++            _setKernelArg(_fused17,2,sizeof(cl_mem),&_c);
++            _setKernelArg(_fused17,3,sizeof(uint32),&b_ui);
++            _setKernelArg(_fused17,4,sizeof(uint32),&b_inv);
++            _setKernelArg(_fused17,5,sizeof(int32),&b_s);
++            fuseBoundaries(_normalize2,_forward64_0,_fused17);
++        }
++
++        CREATE_SETCOPY_KERNEL(set);
+ 		CREATE_SETCOPY_KERNEL(copy);
+ 		CREATE_COPYP_KERNEL(copyp);
+ 
+@@ -518,6 +528,7 @@
+ 
+ 		_releaseKernel(_normalize1dup0); _releaseKernel(_normalize1dup1); _releaseKernel(_normalize2); _releaseKernel(_mulscalar);
+ 
++		if (_fused17) _releaseKernel(_fused17);
+ 		_releaseKernel(_set); _releaseKernel(_copy); _releaseKernel(_copyp);
+ 	}
+ 
+@@ -1021,7 +1032,8 @@
+ 
+ private:
+ 
+-	const size_t _mem_size, _cache_size;
++	size_t _mem_size;
++    const size_t _cache_size;
+ 	const size_t _num_regs;
+ 	std::unique_ptr<ZP[]> _z;
+ 	std::unique_ptr<engines<RNS_SIZE, is32>> _pEngine;
+@@ -1155,10 +1167,26 @@
+ 		_pEngine.reset(new engines<RNS_SIZE, is32>(eng_platform, is_boinc_platform ? 0 : device, static_cast<int>(n), isBoinc, num_regs, verbose, unsigned(root_bytes_*8)));
+ 
+         const crt_parameters crt(b);
+-        _pEngine->loadProgram(kernel_source(n, unsigned(root_bytes_*8), _pEngine->getNormWGsize(),
++
++        const cl_device_id gpu = eng_platform.getDevice(is_boinc_platform ? 0 : device);
++        char model[128] = {};
++        cl_ulong device_memory = 0;
++        const bool calibrated = n == 17 && b >= (1u << 28) && b < (1u << 29)
++            && clGetDeviceInfo(gpu, CL_DEVICE_NAME, sizeof(model), model, nullptr) == CL_SUCCESS
++            && clGetDeviceInfo(gpu, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(device_memory), &device_memory, nullptr) == CL_SUCCESS
++            && device_memory > (7ULL << 30) && device_memory <= (9ULL << 30);
++        const bool ampere = calibrated && std::string(model) == "NVIDIA GeForce RTX 3070";
++        const bool ada_ti = calibrated && std::string(model) == "NVIDIA GeForce RTX 4060 Ti";
++        const unsigned steps = ada_ti ? 128 : (ampere ? 32 : 0);
++        _pEngine->loadProgram((ada_ti ? "#define VF_WARP_LEAF 1\n" : "") + kernel_source(n, unsigned(root_bytes_*8), _pEngine->getNormWGsize(),
+                                             _pEngine->getMaxWorkGroupSize(), embedded_kernel));
+-		_pEngine->allocMemory();
+-		_pEngine->createKernels(b, crt);
++        if (steps) {
++            _pEngine->configureReusableBatch(steps);
++            _mem_size += 8 * sizeof(uint32_t);
++        }
++        if (steps && verbose) pio::print("Vibefer2 GFN-17 CUDA graph, " + std::to_string(steps) + " steps\n");
++        _pEngine->allocMemory();
++        _pEngine->createKernels(b, crt, ada_ti || ampere);
+ 
+ 		std::unique_ptr<ZP1[]> wr1(new ZP1[size]{});
+ 		std::unique_ptr<ZP2[]> wr2(new ZP2[size]{});
+--- /dev/null
++++ b/src/cuda/validate_ptx.h
+@@ -0,0 +1,20 @@
++#pragma once
++#include <stdexcept>
++#include <string>
++namespace cuda_gfn {
++inline std::string validate_opencl_ptx(std::string binary) {
++    while(!binary.empty() && binary.back()=='\0') binary.pop_back();
++    if(binary.find('\0')!=std::string::npos || binary.find(".version ")==std::string::npos ||
++       binary.find(".entry ")==std::string::npos)
++        throw std::runtime_error("NVIDIA OpenCL compiler did not export PTX");
++    size_t pos=0;
++    while((pos=binary.find("%envreg3",pos))!=std::string::npos) {
++        if(pos+8<binary.size() && binary[pos+8]>='0' && binary[pos+8]<='9') { pos+=8; continue; }
++        binary.replace(pos,8,"0");
++        ++pos;
++    }
++    if(binary.find("%envreg")!=std::string::npos)
++        throw std::runtime_error("Unsupported OpenCL PTX environment register");
++    return binary;
++}
++}
+--- a/src/genefer.h
++++ b/src/genefer.h
+@@ -564,10 +564,7 @@
+ 
+ 			if ((i % B_GL == 0) && (i / B_GL != 0))
+ 			{
+-				pTransform->copy(2, 0);
+-				pTransform->mul(1);	// d(t)
+-				pTransform->copy(1, 0);
+-				pTransform->copy(0, 2);
++				pTransform->accumulateGerbicz();
+ 			}
+ 			if ((B_PL != 0) && (i % B_PL == 0))
+ 			{
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -119,7 +119,7 @@
+ #endif
+ 
+ 		std::ostringstream ss;
+-		ss << "Vibefer2 0.1 / " << name << ext << " version 26.04.0 (" << sysver << ssc.str() << ")" << std::endl;
++		ss << "Vibefer2 0.2 / " << name << ext << " version 26.04.0 (" << sysver << ssc.str() << ")" << std::endl;
+ 		ss << "Copyright (c) 2022, Yves Gallot" << std::endl;
+ 		ss << name << " is free source code, under the MIT license." << std::endl;
+ 		if (nl)
+--- a/src/transform.h
++++ b/src/transform.h
+@@ -62,6 +62,15 @@
+ 	virtual void mul() = 0;									// r_0 *= r_m
+ 
+ 	virtual void copy(const size_t dst, const size_t src) const = 0;	// r_dst = r_src
++
++    // Update the Gerbicz-Li product in register 1. Preserve register 0 and
++    // leave its snapshot in register 2, including for checkpoint writers.
++    virtual void accumulateGerbicz() {
++        copy(2, 0);
++        mul(1);
++        copy(1, 0);
++        copy(0, 2);
++    }
+ 
+ 	virtual size_t getMemSize() const = 0;
+ 	virtual size_t getCacheSize() const = 0;
+--- /dev/null
++++ b/tools/mps_compiler.cpp
+@@ -0,0 +1,65 @@
++// Read OpenCL C on stdin, select exactly the assigned GPU and write raw PTX.
++// Vibefer validates and normalizes the returned PTX before loading the module.
++#define CL_TARGET_OPENCL_VERSION 120
++#include <CL/cl.h>
++#include "../src/cuda/mps_compiler.h"
++#include <iostream>
++#include <iterator>
++#include <vector>
++
++static void check(cl_int code,const char *name) {
++    if(code!=CL_SUCCESS) throw std::runtime_error(std::string(name)+": "+std::to_string(code));
++}
++static cl_device_id find_device(const std::string &uuid) {
++    cl_uint n=0;
++    check(clGetPlatformIDs(0,nullptr,&n),"enumerate platforms");
++    std::vector<cl_platform_id> platforms(n);
++    check(clGetPlatformIDs(n,platforms.data(),nullptr),"read platforms");
++    cl_device_id match=nullptr;
++    for(auto platform:platforms) {
++        cl_int e=clGetDeviceIDs(platform,CL_DEVICE_TYPE_GPU,0,nullptr,&n);
++        if(e==CL_DEVICE_NOT_FOUND) continue;
++        check(e,"enumerate GPUs");
++        std::vector<cl_device_id> devices(n);
++        check(clGetDeviceIDs(platform,CL_DEVICE_TYPE_GPU,n,devices.data(),nullptr),"read GPUs");
++        for(auto d:devices) {
++            cl_uint vendor=0;
++            check(clGetDeviceInfo(d,CL_DEVICE_VENDOR_ID,sizeof(vendor),&vendor,nullptr),"read vendor");
++            if(vendor!=0x10de || vibefer_mps::uuid_hex(d)!=uuid) continue;
++            if(match) throw std::runtime_error("Ambiguous device UUID");
++            match=d;
++        }
++    }
++    if(!match) throw std::runtime_error("Assigned NVIDIA GPU UUID unavailable");
++    return match;
++}
++int main(int argc,char **argv) {
++    try {
++        if(argc!=2) throw std::runtime_error("Pass one GPU UUID encoded as 32 hex digits");
++        const auto device=find_device(argv[1]);
++        const std::string source{std::istreambuf_iterator<char>(std::cin),{}};
++        if(source.empty() || std::cin.bad()) throw std::runtime_error("Missing OpenCL source");
++        const char *text=source.data(); size_t length=source.size(); cl_int e;
++        const auto context=clCreateContext(nullptr,1,&device,nullptr,nullptr,&e);
++        check(e,"create compiler context");
++        auto program=clCreateProgramWithSource(context,1,&text,&length,&e);
++        check(e,"create program");
++        e=clBuildProgram(program,1,&device,"",nullptr,nullptr);
++        if(e!=CL_SUCCESS) {
++            size_t n=0;
++            clGetProgramBuildInfo(program,device,CL_PROGRAM_BUILD_LOG,0,nullptr,&n);
++            std::vector<char> log(n+1);
++            clGetProgramBuildInfo(program,device,CL_PROGRAM_BUILD_LOG,n,log.data(),nullptr);
++            throw std::runtime_error(std::string("OpenCL compilation failed: ")+log.data());
++        }
++        check(clGetProgramInfo(program,CL_PROGRAM_BINARY_SIZES,sizeof(length),&length,nullptr),"read binary size");
++        std::string binary(length,'\0'); char *out=binary.data();
++        check(clGetProgramInfo(program,CL_PROGRAM_BINARIES,sizeof(out),&out,nullptr),"read binary");
++        std::cout.write(binary.data(),binary.size());
++        clReleaseProgram(program); clReleaseContext(context);
++        return std::cout ? 0 : 1;
++    } catch(const std::exception &e) {
++        std::cerr << "Vibefer OpenCL compiler: " << e.what() << "\n";
++        return 1;
++    }
++}

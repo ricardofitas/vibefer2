@@ -1,0 +1,630 @@
+diff --git a/kernels/src/packed-centered-encode.clh b/kernels/src/packed-centered-encode.clh
+new file mode 100644
+index 0000000..f91388e
+--- /dev/null
++++ b/kernels/src/packed-centered-encode.clh
+@@ -0,0 +1,25 @@
++// Ordinary checkpoints may contain signed digits up to b+2. Recenter on import
++// so the first square obeys exactly the same bound as all subsequent squares.
++INLINE int pg_normalize_input(__global const int *digits, uint word, __private int *out,
++                              __global uint *error) {
++    int carry = 0;
++#pragma unroll
++    for (int k = 0; k < 4; ++k) {
++        const int d = digits[4 * word + k];
++        if (d < -(int)(PG_BASE + 2) || d > (int)(PG_BASE + 2))
++            atomic_or(error, 16u);
++        const int z = d + carry;
++        carry = pg_digit_carry(z, k == 3);
++        out[k] = z - carry * (int)PG_BASE;
++    }
++    return carry;
++}
++__kernel void packed_encode(__global const int *digits, __global uint *state,
++                            __global uint *error) {
++    const uint idx = get_global_id(0), field = idx / N_SZ, j = idx % N_SZ;
++    int r[4], previous[4];
++    pg_normalize_input(digits, j, r, error);
++    const int q = pg_normalize_input(digits, (j - 1) & (N_SZ - 1), previous, error);
++    r[0] += j == 0 ? -q : q;
++    state[idx] = pg_from_digits(r[0], r[1], r[2], r[3], field);
++}
+diff --git a/kernels/src/packed-centered-q44.clh b/kernels/src/packed-centered-q44.clh
+new file mode 100644
+index 0000000..c6a390f
+--- /dev/null
++++ b/kernels/src/packed-centered-q44.clh
+@@ -0,0 +1,69 @@
++// Q44 weights approximate a carry decision only. Every modular update is exact.
++// The admission check proves that the resulting redundant digit fits 0.51 b^4.
++INLINE long pg_weight(int t, int2 weight) {
++    // weight.s0 * 2^32 + weight.s1 = nearest(2^44 * coefficient / b^4).
++    return (long)t * weight.s0 + mul_hi(t, weight.s1);
++}
++INLINE uint pg_small_mod(long x, uint p) {
++    // p is just below 2^31; |x| < 2^34 from the input and carry bounds.
++    long y = (long)((uint)x & 0x7fffffffu) + (x >> 31) * (long)(0x80000000u - p);
++    if (y < 0) y += p;
++    if (y >= p) y -= p;
++    return (uint)y;
++}
++INLINE void pg_convert(__global const uint *in, __global uint *out, const int dup, const uint tid) {
++    const int lane = tid & 31, j = (int)(tid >> 5) * 30 + lane - 2;
++    const uint src = (uint)j & (N_SZ - 1);
++    int t[PG_K];
++    long total = 0;
++#pragma unroll
++    for (int f = 0; f < PG_K; ++f) {
++        const uint p = pg_cp.p[f];
++        const uint v = pg_shoup(in[f * N_SZ + src], pg_cp.scale[dup][f], pg_cp.scaleq[dup][f], p);
++        t[f] = v > p/2 ? as_int(v - p) : (int)v;
++        total += t[f];
++    }
++    const int m = (int)((total + (1l << 30)) >> 31);
++    long low = pg_weight(-m, pg_q44_p[0]), mid = pg_weight(-m, pg_q44_p[1]);
++    uint high = (uint)(-m) * pg_radix_p_high;
++#pragma unroll
++    for (int f = 0; f < PG_K; ++f) {
++        low += pg_weight(t[f], pg_q44_h0[f]);
++        mid += pg_weight(t[f], pg_q44_h1[f]);
++        high += (uint)t[f] * pg_radix_h_high[f];
++    }
++    const long q0 = (low + 2048) >> 12, q1 = (mid + 2048) >> 12;
++    const int T = as_int(high + (uint)q1);
++    const int low_fraction = (int)(((uint)low + 2048u) & 4095u) - 2048;
++    const int mid_fraction = (int)(((uint)mid + 2048u) & 4095u) - 2048;
++    const int prev_fraction = as_int(pg_up(as_uint(mid_fraction), 1));
++    const int rebase = (low_fraction + (src == 0 ? -prev_fraction : prev_fraction) + 2048) >> 12;
++    const int prev_rebase = as_int(pg_up(as_uint(rebase), 1)), prev_T = as_int(pg_up(as_uint(T), 2));
++    const int small = (src == 0 ? -prev_rebase : prev_rebase) + (src < 2 ? -prev_T : prev_T);
++#pragma unroll
++    for (int f = 0; f < PG_K; ++f) {
++        const uint p = pg_cp.p[f], B = pg_cp.b[f], Bq = pg_cp.bq[f];
++        long dot = -(long)m * pg_q44_pm[f];
++#pragma unroll
++        for (int k = 0; k < 5; ++k)
++            dot += (long)t[k] * pg_q44_matrix[f][k];
++        uint first = 0;
++        if (pg_q44_split[f]) {
++            first = pg_redc(dot, p, pg_cp.pinv[f]);
++            dot = 0;
++        }
++#pragma unroll
++        for (int k = 5; k < PG_K; ++k)
++            dot += (long)t[k] * pg_q44_matrix[f][k];
++        const uint A0 = addmod(first, pg_redc(dot, p, pg_cp.pinv[f]), p);
++        const uint u = submod(A0, pg_shoup(pg_small_mod(q0, p), B, Bq, p), p);
++        const uint raw = in[f * N_SZ + src], c0 = raw >= p ? raw - p : raw;
++        const uint c = dup ? addmod(c0, c0, p) : c0;
++        const uint v0 = pg_shoup(submod(c, u, p), pg_cp.binv[f], pg_cp.binvq[f], p);
++        const uint v = submod(v0, pg_shoup(T < 0 ? as_uint(T) + p : (uint)T, B, Bq, p), p);
++        const long prev_v = pg_up(v, 1);
++        const uint u_adjusted = rebase > 0 ? submod(u, B, p) : rebase < 0 ? addmod(u, B, p) : u;
++        const uint word = pg_canon((long)u_adjusted + (src == 0 ? -prev_v : prev_v) + small, p);
++        if (lane >= 2 && j < N_SZ) out[f * N_SZ + j] = word;
++    }
++}
+diff --git a/kernels/src/packed-centered.clh b/kernels/src/packed-centered.clh
+new file mode 100644
+index 0000000..0997efc
+--- /dev/null
++++ b/kernels/src/packed-centered.clh
+@@ -0,0 +1,72 @@
++// Exact radix-b CRT for eight or nine 31-bit fields, four base-b digits per word.
++// Each warp owns 29 words and loads three predecessors for the negacyclic carry.
++INLINE long pg_floor_base(long value) {
++    // Translate to an unsigned multiple of b to use one constant unsigned division.
++    const ulong quotient_offset = (1ul << 63) / (ulong)PG_BASE;
++    const ulong offset = quotient_offset * (ulong)PG_BASE;
++    return as_long((as_ulong(value) + offset) / (ulong)PG_BASE - quotient_offset);
++}
++
++INLINE int pg_digit_carry(int value, int centered_top) {
++    const int shifted = value + (centered_top ? PG_BASE / 2 : 0);
++    const int quotient = shifted / (int)PG_BASE;
++    return quotient - (shifted - quotient * (int)PG_BASE < 0);
++}
++
++INLINE uint pg_from_digits(int d0, int d1, int d2, int d3, uint field) {
++    const uint p = pg_cp.p[field], q = pg_codec_bq[field];
++    uint value = (uint)(d3 < 0 ? (long)d3 + p : d3);
++    value = addmod(pg_shoup(value, PG_BASE, q, p), (uint)d2, p);
++    value = addmod(pg_shoup(value, PG_BASE, q, p), (uint)d1, p);
++    uint low = (uint)(d0 < 0 ? (long)d0 + p : d0);
++    return addmod(pg_shoup(value, PG_BASE, q, p), low, p);
++}
++
++INLINE void pg_convert(__global const uint *in, __global uint *out, const int dup, const uint tid) {
++    const int lane = tid & 31;
++    const int j = (int)(tid >> 5) * 29 + lane - 3;
++    const uint src = (uint)j & (N_SZ - 1);
++    int t[PG_K];
++    long sum = 0;
++#pragma unroll
++    for (int f = 0; f < PG_K; ++f) {
++        const uint p = pg_cp.p[f];
++        const uint v = pg_shoup(in[f * N_SZ + src], pg_cp.scale[dup][f], pg_cp.scaleq[dup][f], p);
++        t[f] = v > p / 2 ? as_int(v - p) : (int)v;
++        sum += t[f];
++    }
++    const int rank = (int)((sum + (1l << 30)) >> 31);
++    int digit[8];
++    long carry = 0;
++#pragma unroll
++    for (int k = 0; k < 8; ++k) {
++        long z = carry - (long)rank * pg_radix_p[k];
++#pragma unroll
++        for (int f = 0; f < PG_K; ++f)
++            z += (long)t[f] * pg_radix_h[k][f];
++        carry = pg_floor_base(z + ((k & 3) == 3 ? PG_BASE / 2 : 0));
++        digit[k] = as_int((uint)z - (uint)carry * PG_BASE);
++    }
++    // The true coefficient above b^8 is small. Recover its signed value modulo 2^32.
++    uint high = (uint)carry - (uint)rank * pg_radix_p_high;
++#pragma unroll
++    for (int f = 0; f < PG_K; ++f)
++        high += (uint)t[f] * pg_radix_h_high[f];
++    int local_carry = as_int(pg_up(high, 2));
++    if (src < 2) local_carry = -local_carry;
++    int r[4];
++#pragma unroll
++    for (int k = 0; k < 4; ++k) {
++        const int preceding = as_int(pg_up(as_uint(digit[4 + k]), 1));
++        const int z = digit[k] + (src == 0 ? -preceding : preceding) + local_carry;
++        local_carry = pg_digit_carry(z, k == 3);
++        r[k] = z - local_carry * (int)PG_BASE;
++    }
++    const int preceding_carry = as_int(pg_up(as_uint(local_carry), 1));
++    r[0] += src == 0 ? -preceding_carry : preceding_carry;
++    if (lane >= 3 && j < N_SZ) {
++#pragma unroll
++        for (int f = 0; f < PG_K; ++f)
++            out[f * N_SZ + j] = pg_from_digits(r[0], r[1], r[2], r[3], f);
++    }
++}
+diff --git a/kernels/src/packed.cl b/kernels/src/packed.cl
+index 9283c03..8815690 100644
+--- a/kernels/src/packed.cl
++++ b/kernels/src/packed.cl
+@@ -117,6 +117,20 @@ INLINE uint4_32 mulmod4(const uint4_32 lhs, const uint4_32 rhs, const uint2_32 p
+     return (uint4_32)(mulmod2(lhs.s01, rhs.s01, pq), mulmod2(lhs.s23, rhs.s23, pq));
+ }
+ 
++#if PG_PRIME_BITS == 31
++// Keep values below 2p. A twiddle is canonical or a Shoup quotient;
++// folding one multiplicand bounds a Montgomery product even with a lazy input.
++INLINE uint_32 fold2(uint_32 a, uint_32 p) { return a >= p ? a-p : a; }
++INLINE uint_32 iadd(uint_32 a, uint_32 b, uint_32 p) { return fold2(a,p) + fold2(b,p); }
++INLINE uint_32 ladd(uint_32 a, uint_32 b, uint_32 p) { return iadd(a,b,p); }
++INLINE uint_32 lsub(uint_32 a, uint_32 b, uint_32 p) { return fold2(a,p) + p - fold2(b,p); }
++INLINE uint_32 lscalar(uint_32 a, uint_32 b, uint2_32 pq) {
++    const ulong t = (ulong)a * b;
++    return (uint)(t >> 32) + pq.s0 - mul_hi((uint)t * pq.s1, pq.s0);
++}
++INLINE uint_32 lmul(uint_32 a, uint_32 b, uint2_32 pq) { return lscalar(a,fold2(b,pq.s0),pq); }
++INLINE uint_32 lsqr(uint_32 a, uint2_32 pq) { return lmul(a,a,pq); }
++#else
+ INLINE uint_32 fold2(uint_32 a, uint_32 p) { return a - ((a >= 2 * p) ? 2 * p : 0); }
+ INLINE uint_32 iadd(uint_32 a, uint_32 b, uint_32 p) {
+     uint_32 t = a + b;
+@@ -141,6 +155,7 @@ INLINE uint_32 lsqr(uint_32 a, uint2_32 pq) {
+     a = fold2(a, pq.s0);
+     return lscalar(a, a, pq);
+ }
++#endif
+ INLINE uint2_32 fold22(uint2_32 a, uint_32 p) { return (uint2_32)(fold2(a.s0, p), fold2(a.s1, p)); }
+ INLINE uint2_32 iadd2(uint2_32 a, uint2_32 b, uint_32 p) {
+     return (uint2_32)(iadd(a.s0, b.s0, p), iadd(a.s1, b.s1, p));
+@@ -187,8 +202,7 @@ INLINE uint_32 shoup_root(uint_32 a, ulong root, uint2_32 pq) {
+ #else
+     uint_32 rq = (uint_32)root, w = mul_hi(rq, pq.s0) + (rq != 0), q = mul_hi(a, rq);
+ #endif
+-    uint_32 r = a * w - q * pq.s0;
+-    return r;
++    return a * w - q * pq.s0;
+ }
+ INLINE uint2_32 shoup_root2(uint2_32 a, ulong root, uint2_32 pq) {
+     return (uint2_32)(shoup_root(a.s0, root, pq), shoup_root(a.s1, root, pq));
+@@ -278,6 +292,58 @@ INLINE uint4_32 shoup_root4(uint4_32 a, ulong root, uint2_32 pq) {
+         z1 = ROOTMUL4(t, win, pq);                                                                 \
+     }
+ 
++#if PG_PRIME_BITS == 31
++#undef FWD2
++#undef BCK2
++#define FWD2(z0, z1, w) \
++{ \
++    const uint_32 a = fold2(z0, pq.s0); \
++    const uint_32 t = fold2(ROOTMUL(z1, w, pq), pq.s0); \
++    z1 = a + pq.s0 - t; \
++    z0 = a + t; \
++}
++#define BCK2(z0, z1, win) \
++{ \
++    const uint_32 a = fold2(z0, pq.s0), b = fold2(z1, pq.s0); \
++    const uint_32 t = b + pq.s0 - a; \
++    z0 = a + b; \
++    z1 = ROOTMUL(t, win, pq); \
++}
++#undef FWD2v2
++#undef BCK2v2
++#define FWD2v2(z0, z1, w) \
++{ \
++    const uint2_32 a = fold22(z0, pq.s0); \
++    const uint2_32 t = fold22(ROOTMUL2(z1, w, pq), pq.s0); \
++    z1 = a + pq.s0 - t; \
++    z0 = a + t; \
++}
++#define BCK2v2(z0, z1, win) \
++{ \
++    const uint2_32 a = fold22(z0, pq.s0), b = fold22(z1, pq.s0); \
++    const uint2_32 t = b + pq.s0 - a; \
++    z0 = a + b; \
++    z1 = ROOTMUL2(t, win, pq); \
++}
++#undef FWD2v4
++#undef BCK2v4
++#define FWD2v4(z0, z1, w) \
++{ \
++    const uint4_32 a = fold24(z0, pq.s0); \
++    const uint4_32 t = fold24(ROOTMUL4(z1, w, pq), pq.s0); \
++    z1 = a + pq.s0 - t; \
++    z0 = a + t; \
++}
++#define BCK2v4(z0, z1, win) \
++{ \
++    const uint4_32 a = fold24(z0, pq.s0), b = fold24(z1, pq.s0); \
++    const uint4_32 t = b + pq.s0 - a; \
++    z0 = a + b; \
++    z1 = ROOTMUL4(t, win, pq); \
++}
++#endif
++
++
+ INLINE void _loadg1(const sz_t n, uint_32 *const zl, __global const uint_32 *restrict const z,
+                     const sz_t s) {
+     for (sz_t l = 0; l < n; ++l)
+@@ -1261,7 +1327,11 @@ INLINE void square_4x4(const uint2_32 pq, __local uint4 *Z, __global const root_
+ 
+ INLINE uint_32 quartic_redc(const ulong t, const uint2_32 pq) {
+     const uint_32 h = (uint_32)(t >> 32), m = mul_hi((uint_32)t * pq.s1, pq.s0);
++#if PG_PRIME_BITS == 31
++    return submod(h >= pq.s0 ? h - pq.s0 : h, m, pq.s0);
++#else
+     return fold2(h + pq.s0 - m, pq.s0);
++#endif
+ }
+ INLINE uint4_32 quartic_dot(const uint2_32 pq, const uint4_32 input, const uint_32 gamma,
+                             const uint_32 qgamma) {
+@@ -1275,12 +1345,24 @@ INLINE uint4_32 quartic_dot(const uint2_32 pq, const uint4_32 input, const uint_
+             u3 = a.s3 * gamma - mul_hi(a.s3, qgamma) * p;
+     u2 -= u2 >= p ? p : 0;
+     u3 -= u3 >= p ? p : 0;
++#if PG_PRIME_BITS == 31
++    // Reduce doubled multiplicands first. Each dot sums at most three products < p^2.
++    const uint d0 = addmod(a.s0, a.s0, p), d1 = addmod(a.s1, a.s1, p), d2 = addmod(a.s2, a.s2, p);
++    const ulong t0 = (ulong)a.s0 * a.s0 + (ulong)d1 * u3 + (ulong)a.s2 * u2;
++    const ulong t1 = (ulong)d0 * a.s1 + (ulong)d2 * u3;
++    const ulong t2 = (ulong)d0 * a.s2 + (ulong)a.s1 * a.s1 + (ulong)a.s3 * u3;
++    const ulong t3 = (ulong)d0 * a.s3 + (ulong)d1 * a.s2;
++    const uint4 z = (uint4)(quartic_redc(t0, pq), quartic_redc(t1, pq),
++                            quartic_redc(t2, pq), quartic_redc(t3, pq));
++    return addmod4(z, z, p);
++#else
+     const ulong t0 = (ulong)(2 * a.s0) * a.s0 + (ulong)(4 * a.s1) * u3 + (ulong)(2 * a.s2) * u2;
+     const ulong t1 = (ulong)(4 * a.s0) * a.s1 + (ulong)(4 * a.s2) * u3;
+     const ulong t2 = (ulong)(4 * a.s0) * a.s2 + (ulong)(2 * a.s1) * a.s1 + (ulong)(2 * a.s3) * u3;
+     const ulong t3 = (ulong)(4 * a.s0) * a.s3 + (ulong)(4 * a.s1) * a.s2;
+     return (uint4_32)(quartic_redc(t0, pq), quartic_redc(t1, pq), quartic_redc(t2, pq),
+                       quartic_redc(t3, pq));
++#endif
+ }
+ 
+ INLINE void quartic_square8(const uint2_32 pq, uint4_32 z[2], const ulong w1, const ulong win1) {
+diff --git a/src/cuda/kernel.cpp b/src/cuda/kernel.cpp
+index 369c93c..df2bb47 100644
+--- a/src/cuda/kernel.cpp
++++ b/src/cuda/kernel.cpp
+@@ -101,7 +101,8 @@ std::vector<integer> column(const std::vector<weight> &a, bool fractions) {
+ std::string source(uint32_t base, const kernel_plan &plan, unsigned fields, const prime_pool &p,
+                    const packed_parameters &a) {
+     const integer unit = integer(1) << 32;
+-    const unsigned limbs = std::max(plan.pack, (fields * 30 + 31) / 32 + 1);
++    const unsigned prime_bits = plan.centered_fields ? 31 : 30;
++    const unsigned limbs = std::max(plan.pack, (fields * prime_bits + 31) / 32 + 1);
+     std::ostringstream header;
+     auto define = [&](const char *name, unsigned value) {
+         header << "#define PG_" << name << " " << value << "\n";
+@@ -112,7 +113,8 @@ std::string source(uint32_t base, const kernel_plan &plan, unsigned fields, cons
+     define("CHUNK", plan.chunk);
+     define("ROOT_WORDS", plan.length / 2);
+     define("ROOT_BITS", plan.root_bits);
+-    define("PRIME_BITS", 30);
++    define("PRIME_BITS", prime_bits);
++    if (plan.centered_fields) define("CENTER_LANES", plan.approximate_carries ? 30 : 29);
+     define("K", fields);
+     define("N", plan.length);
+     define("LN", logarithm(plan.length));
+@@ -193,6 +195,12 @@ typedef struct {
+                          array(scaleq) + "," + array(h) + "," + array(hq) + "," + array(binv) + "," +
+                          array(binvq) + "," + array(b) + "," + array(bq) + "," + array(a.radix_montgomery) +
+                          "," + array(a.extra_montgomery) + "," + array(a.matrix) + "}";
++    if (plan.centered_fields && !plan.approximate_carries)
++        params = "{" + array(a.primes) + "," + array(pinv) + "," + array(scale) + "," + array(scaleq) + "}";
++    if (plan.approximate_carries)
++        params = "{" + array(a.primes) + "," + array(pinv) + "," + array(scale) + "," + array(scaleq)
++               + "," + array(h) + "," + array(hq) + "," + array(binv) + "," + array(binvq)
++               + "," + array(b) + "," + array(bq) + "}";
+     auto ti = column(a.tail, false);
+     const integer u64 = integer(1) << 64;
+     for (auto &v : ti)
+@@ -202,7 +210,7 @@ typedef struct {
+                               literal(a.extra_quotient.fraction) + "," + array(ti) + "," +
+                               array(column(a.tail, true)) + "," + literal(mod(a.extra_tail.whole, u64)) +
+                               "," + literal(a.extra_tail.fraction) + "}";
+-    structures += "__constant PgParam pg_cp=" + params + ";\n__constant PgQuant pg_cq=" + quant + ";\n";
++    structures += "__constant PgParam pg_cp=" + params + ";\n__constant PgQuant pg_cq=" + (plan.centered_fields ? "{0}" : quant) + ";\n";
+     auto words = [&](const integer &value) {
+         std::vector<integer> out;
+         for (unsigned j = 0; j < limbs; ++j)
+@@ -219,7 +227,70 @@ typedef struct {
+     structures += "__constant uint pg_codec_p[PG_CODEC_LIMBS]=" + unsigned_array(words(a.modulus)) + ";\n";
+     structures += "__constant uint pg_codec_bq[PG_K]=" + unsigned_array(division) + ";\n";
+     std::string converter = embedded::converter;
+-    if (plan.matrix_mad) {
++    std::string codec = embedded::codec;
++    if (plan.centered_fields) {
++        const integer square_radix = a.radix * a.radix;
++        std::vector<std::vector<integer>> hd(8);
++        std::vector<integer> pd, high;
++        integer place = 1;
++        for (unsigned k = 0; k < 8; ++k, place *= base) {
++            pd.push_back(mod(a.modulus / place, base));
++            for (const integer &h : a.cofactors)
++                hd[k].push_back(mod(h / place, base));
++        }
++        for (const integer &h : a.cofactors)
++            high.push_back(mod(h / square_radix, unit));
++        structures += "__constant uint pg_radix_h[8][PG_K]=" + unsigned_array(hd) + ";\n";
++        structures += "__constant uint pg_radix_p[8]=" + unsigned_array(pd) + ";\n";
++        structures += "__constant uint pg_radix_h_high[PG_K]=" + unsigned_array(high) + ";\n";
++        structures += "__constant uint pg_radix_p_high=" + unsigned_array(mod(a.modulus / square_radix, unit)) + ";\n";
++        if (plan.approximate_carries) {
++            const integer S = integer(1) << 44;
++            auto weight_pair = [&](const integer &x) {
++                const integer w = nearest(x * S, a.radix), hi = nearest(w, unit);
++                return "(int2)(" + literal(hi) + "," + literal(w - hi * unit) + ")";
++            };
++            std::string lo = "{", mid = "{";
++            std::vector<std::vector<integer>> matrix;
++            std::vector<integer> pm, split_dot;
++            const integer p0 = mod(a.modulus, a.radix);
++            for (unsigned f = 0; f < fields; ++f) {
++                const integer prime = a.primes[f];
++                if (f) { lo += ","; mid += ","; }
++                lo += weight_pair(mod(a.cofactors[f], a.radix));
++                mid += weight_pair(mod(a.cofactors[f] / a.radix, a.radix));
++                std::vector<integer> row;
++                pm.push_back(centered(p0 * unit, prime));
++                integer bound = magnitude(pm.back()) * ((fields + 1) / 2);
++                for (unsigned k = 0; k < fields; ++k) {
++                    row.push_back(centered(mod(a.cofactors[k], a.radix) * unit, prime));
++                    bound += (a.primes[k] / 2) * magnitude(row.back());
++                }
++                // Split rare long dots before the signed accumulator can overflow.
++                split_dot.emplace_back(bound >= (integer(1) << 63) ? 1 : 0);
++                matrix.push_back(row);
++            }
++            structures += "__constant int2 pg_q44_h0[PG_K]=" + lo + "};\n";
++            structures += "__constant int2 pg_q44_h1[PG_K]=" + mid + "};\n";
++            structures += "__constant int2 pg_q44_p[2]={" + weight_pair(p0) + "," +
++                          weight_pair(mod(a.modulus / a.radix, a.radix)) + "};\n";
++            structures += "__constant uint pg_q44_split[PG_K]=" + unsigned_array(split_dot) + ";\n";
++            structures += "__constant int pg_q44_pm[PG_K]=" + array(pm) + ";\n";
++            structures += "__constant int pg_q44_matrix[PG_K][PG_K]=" + array(matrix) + ";\n";
++        }
++        const auto start = converter.find("INLINE void pg_convert(");
++        const auto end = converter.find("__kernel", start);
++        require(start != std::string::npos && end != std::string::npos, "Missing packed converter");
++        std::string algorithm = embedded::centered_converter;
++        if (plan.approximate_carries)
++            algorithm.replace(algorithm.find("INLINE void pg_convert("), std::string::npos, embedded::centered_q44);
++        converter.replace(start, end - start, algorithm);
++        const auto encode = codec.find("__kernel void packed_encode(");
++        const auto decode = codec.find("__kernel void packed_decode(", encode);
++        require(encode != std::string::npos && decode != std::string::npos, "Missing packed codec");
++        codec.replace(encode, decode - encode, embedded::centered_encoder);
++    }
++    if (plan.matrix_mad && !plan.centered_fields) {
+         replace(converter, "INLINE uint pg_shoup(",
+                 "INLINE long pg_mad(long a,int x,int y){long z;asm(\"mad.wide.s32 "
+                 "%0,%1,%2,%3;\":\"=l\"(z):\"r\"(x),\"r\"(y),\"l\"(a));return z;}\nINLINE uint pg_shoup(");
+@@ -229,7 +300,7 @@ typedef struct {
+     if (plan.inline_converter)
+         replace(converter, "INLINE void pg_convert(",
+                 "INLINE __attribute__((always_inline)) void pg_convert(");
+-    std::string out = header.str() + body + structures + converter + embedded::codec;
++    std::string out = header.str() + body + structures + converter + codec;
+     require(out.find("@G_") == std::string::npos, "Unresolved kernel parameter");
+     return out;
+ }
+@@ -253,6 +324,16 @@ generated_kernel generate_kernel(uint32_t base, unsigned exponent, const kernel_
+             "Inner resource limit");
+     (void)outer_network(plan.outer);
+     (void)inner_network(inner);
++    if (plan.centered_fields) {
++        static constexpr uint32_t primes[] = {2147352577,2146959361,2146041857,2145976321,2144796673,
++                                              2144468993,2144010241,2143092737,2142830593};
++        static constexpr uint32_t roots[] = {5,11,3,7,5,3,11,3,5};
++        const unsigned count = plan.centered_fields;
++        require(count == 8 || count == 9, "Unsupported centered prime set");
++        const prime_pool pool31{primes, roots, count};
++        auto a = admit_centered(base, plan.length, plan.pack, {primes, primes + count}, plan.approximate_carries);
++        return {source(base, plan, count, pool31, a), count};
++    }
+     const prime_pool p = pool(logarithm(plan.length));
+     const unsigned first = plan.fields ? plan.fields : 2, last = plan.fields ? plan.fields : p.count;
+     require(first >= 2 && last <= p.count, "Unavailable prime count");
+diff --git a/src/cuda/kernel.h b/src/cuda/kernel.h
+index b0caa2f..9ffc616 100644
+--- a/src/cuda/kernel.h
++++ b/src/cuda/kernel.h
+@@ -7,6 +7,8 @@ struct kernel_plan {
+     unsigned length = 65536, pack = 8, outer = 64, chunk = 8, inner_blocks = 1;
+     unsigned root_bits = 32, ratio = 3, fields = 0;
+     bool matrix_mad = false, inline_converter = false;
++    unsigned centered_fields = 0;
++    bool approximate_carries = false;
+ };
+ struct generated_kernel {
+     std::string source;
+diff --git a/src/cuda/packed_device.h b/src/cuda/packed_device.h
+index 107b866..a1f48d2 100644
+--- a/src/cuda/packed_device.h
++++ b/src/cuda/packed_device.h
+@@ -13,7 +13,7 @@
+ class packed_device {
+     unsigned n = 65536;
+     unsigned outer_threads_ = 256, inner_threads_ = 64;
+-    unsigned packed_digits_ = 8;
++    unsigned packed_digits_ = 8, converter_warp_words_ = 30;
+     unsigned base_, fields_, root_bits_ = 32, root_words_ = 32768, current_ = 0, pending_ = 0,
+                              mask_ = 0, start_ = 0;
+     CUdevice device_{};
+@@ -133,7 +133,7 @@ class packed_device {
+                             inner_threads_, transformArgs);
+                     addNode(graph, previous, transforms_[2], fields_ * n / 16 / outer_threads_,
+                             outer_threads_, transformArgs);
+-                    addNode(graph, previous, converters_[bit], ((n + 29) / 30 + 3) / 4, 128,
++                    addNode(graph, previous, converters_[bit], ((n + converter_warp_words_ - 1) / converter_warp_words_ + 3) / 4, 128,
+                             convertArgs);
+                 }
+                 cuda_check(cuGraphInstantiate(&exec, graph, 0));
+@@ -149,7 +149,7 @@ class packed_device {
+                 launch(transforms_[0], fields_ * n / 16 / outer_threads_, outer_threads_, args);
+                 launch(transforms_[1], fields_ * n / 16 / inner_threads_, inner_threads_, args);
+                 launch(transforms_[2], fields_ * n / 16 / outer_threads_, outer_threads_, args);
+-                launch(converters_[bit], ((n + 29) / 30 + 3) / 4, 128, convert);
++                launch(converters_[bit], ((n + converter_warp_words_ - 1) / converter_warp_words_ + 3) / 4, 128, convert);
+             }
+         pending_ = 0;
+         mask_ = 0;
+@@ -177,6 +177,10 @@ class packed_device {
+         }
+         if (source.find("#define PG_N ") != std::string::npos) n=literal(source,"PG_N");
+         if (n<16384 || n>4194304 || (n & (n-1))) throw std::runtime_error("Invalid packed transform length");
++        const bool centered_fields = literal(source, "PG_PRIME_BITS") == 31;
++        converter_warp_words_ = centered_fields ? literal(source, "PG_CENTER_LANES") : 30;
++        if (converter_warp_words_ != 29 && converter_warp_words_ != 30)
++            throw std::runtime_error("Invalid centered carry warp");
+         fields_ = literal(source, "PG_K");
+         packed_digits_ = literal(source, "PG_PACK");
+         if (!packed_digits_ || packed_digits_ > 64 || (packed_digits_ & (packed_digits_-1)) ||
+@@ -270,7 +274,7 @@ class packed_device {
+             for (unsigned field = 0; field < fields_; ++field) {
+                 uint32_t p = literal(source, "PG_PRIME" + std::to_string(field)),
+                          generator = literal(source, "PG_GENERATOR" + std::to_string(field));
+-                if (uint64_t(p) * 4 >= (uint64_t(1) << 32) || (p - 1) % n ||
++                if (uint64_t(p) * (centered_fields ? 2 : 4) >= (uint64_t(1) << 32) || (p - 1) % (centered_fields ? 2 * n : n) ||
+                     power(generator, (p - 1) / 2, p) == 1)
+                     throw std::runtime_error("Invalid packed transform field");
+                 for (unsigned s = 1; s < n / 2; s *= 2) {
+@@ -309,6 +313,10 @@ class packed_device {
+                         throw std::runtime_error("Packed negacyclic carry-wrap regression failed N="+std::to_string(n)+" j="+std::to_string(j)+" k="+std::to_string(k)+" actual="+std::to_string(actual[size_t(j)*packed_digits_+k])+" expected="+std::to_string(expected));
+                 }
+             }
++            if (verbose && centered_fields && converter_warp_words_ == 30)
++                pio::print("Q44 centered carry decisions\n");
++            if (verbose && centered_fields)
++                pio::print("Centered radix-b CRT with 31-bit fields\n");
+             if (verbose)
+                 pio::print("Exact packed CUDA square (" + std::to_string(fields_) +
+                            " prime channels)\n");
+diff --git a/src/cuda/parameters.h b/src/cuda/parameters.h
+index ceb6f62..74bbd59 100644
+--- a/src/cuda/parameters.h
++++ b/src/cuda/parameters.h
+@@ -186,6 +186,47 @@ inline packed_parameters admit(uint32_t base, unsigned length, unsigned pack, un
+     }
+     return out;
+ }
++// The centered converter uses exact radix-b digits, without the approximate
++// matrix quantizers. Bound the rank, every signed dot product and the high carry.
++inline packed_parameters admit_centered(uint32_t base, unsigned length, unsigned pack,
++                                        const std::vector<uint32_t> &primes, bool q44) {
++    require(!(base & 1) && base >= 500000000 && base <= 525000000 && length == 32768 && pack == 4,
++            "Unsupported centered GFN-17 base or transform");
++    require(primes.size() == 8 || primes.size() == 9, "Centered field count");
++    packed_parameters a;
++    a.fields = unsigned(primes.size());
++    a.ratio = 1;
++    a.radix = power(base, pack);
++    a.modulus = 1;
++    rational rank_error = 0;
++    integer sum_t = 0;
++    for (uint32_t p : primes) {
++        require(p > base + 2 && p < (1u << 31) && (p - 1) % (2 * length) == 0, "Centered prime range");
++        a.primes.emplace_back(p);
++        a.modulus *= p;
++        rank_error += fraction((integer(1) << 31) - p, integer(1) << 32);
++        sum_t += p / 2;
++    }
++    const integer digit = q44 ? integer((51 * a.radix + 99) / 100) : integer(a.radix / 2 + 1);
++    const integer coefficient = 2 * integer(length) * digit * digit;
++    require(fraction(coefficient, a.modulus) + rank_error < fraction(1, 2), "Centered CRT rank");
++    const integer rank = (a.fields + 1) / 2;
++    if (q44) {
++        const rational eps = fraction(sum_t + rank, integer(1) << 45) + fraction(a.fields + 1, 4096);
++        const integer qmax = sum_t + rank + 1, tmax = coefficient / (a.radix * a.radix) + 3;
++        require(qmax < (integer(1) << 34) && tmax < (integer(1) << 31), "Q44 quotient bounds");
++        require((fraction(1, 2) + 2 * eps) * a.radix + qmax + tmax + 1 < rational(digit),
++                "Q44 centered digit invariant");
++    }
++    require((sum_t + rank + 2) * base < (integer(1) << 63) - base, "Centered signed limb sum");
++    require(coefficient / (a.radix * a.radix) + 2 < base / 2, "Centered carry range");
++    for (const integer &p : a.primes) {
++        a.cofactors.push_back(a.modulus / p);
++        a.inverses.push_back(inverse(a.cofactors.back(), p));
++    }
++    return a;
++}
++
+ // Keep the profile's ratio when both work at this field count. Only tighten
+ // a ratio-three profile when doing so avoids moving to another prime.
+ inline packed_parameters admit_profile(uint32_t base, unsigned length, unsigned pack, unsigned ratio,
+diff --git a/src/transform_ocl.cpp b/src/transform_ocl.cpp
+index 101249a..92e15d8 100644
+--- a/src/transform_ocl.cpp
++++ b/src/transform_ocl.cpp
+@@ -101,7 +101,16 @@ transform *make_automatic(uint32_t b,uint32_t n,bool boinc,size_t device,size_t
+ 				continue;
+ 			}
+ 			cuda_gfn::generated_kernel kernel;
+-			try { kernel=cuda_gfn::generate_kernel(b,n,profile->plan); }
++			auto plan = profile->plan;
++			if (info.name == "NVIDIA GeForce RTX 4060" && n == 17 && b >= 500000000 && b <= 525000000
++			    && plan.pack == 4 && plan.length == 32768) {
++				const char *fields = std::getenv("VIBEFER_4060_CENTER_FIELDS");
++				if (fields && (std::string(fields) == "8" || std::string(fields) == "9"))
++					plan.centered_fields = static_cast<unsigned>(*fields - '0');
++				const char *method = std::getenv("VIBEFER_4060_CENTER_METHOD");
++				plan.approximate_carries = plan.centered_fields && method && std::string(method) == "q44";
++			}
++			try { kernel=cuda_gfn::generate_kernel(b,n,plan); }
+ 			catch(const std::invalid_argument &) { continue; }
+ 			if(!cuda_gfn::resources_fit(info,profile->plan,kernel.fields)) continue;
+ 			if(verbose) pio::print(std::string("CUDA profile: ")+profile->name+" (packed)\n");
+diff --git a/tools/embed_cuda_kernels.py b/tools/embed_cuda_kernels.py
+index 93129eb..ebf811a 100644
+--- a/tools/embed_cuda_kernels.py
++++ b/tools/embed_cuda_kernels.py
+@@ -38,6 +38,9 @@ def string(name, value):
+ 
+ string("packed_base", source)
+ string("converter", (root / "kernels/src/packed-convert.clh").read_text())
++string("centered_converter", (root / "kernels/src/packed-centered.clh").read_text())
++string("centered_q44", (root / "kernels/src/packed-centered-q44.clh").read_text())
++string("centered_encoder", (root / "kernels/src/packed-centered-encode.clh").read_text())
+ string("codec", (root / "kernels/src/packed-codec.clh").read_text())
+ string("three_prime", (root / "kernels/src/three-prime.cl").read_text())
+ for outer in (16, 64, 256, 1024):
