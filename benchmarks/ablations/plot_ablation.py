@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Plot RTX 4060 within-block throughput contrasts from paired_squares.csv."""
 
 import argparse
@@ -15,7 +14,13 @@ from matplotlib.lines import Line2D
 
 
 def default_csv():
-    return Path(__file__).resolve().parents[1] / "paired_squares.csv"
+    for parent in Path(__file__).resolve().parents:
+        for relative in ("paired_squares.csv", "data/paired_squares.csv", "benchmarks/paired_squares.csv",
+                         "release/benchmarks/paired_squares.csv"):
+            candidate = parent / relative
+            if candidate.is_file():
+                return candidate
+    return Path("paired_squares.csv")
 
 
 def paired_contrasts(csv_path):
@@ -106,7 +111,7 @@ def plot(values, destination, png_path=None):
                      markerfacecolor="white", markeredgewidth=0.9, markersize=4.4),
               Line2D([], [], color="none", marker="D", markeredgecolor=ink,
                      markerfacecolor=ink, markersize=4.2)]
-    fig.legend(legend, ["Order-balanced block", "Six-block median"],
+    fig.legend(legend, ["Matched block", "Six-block median"],
                ncol=2, loc="upper center", bbox_to_anchor=(0.59, 1.005),
                borderaxespad=0.15, frameon=False, handletextpad=0.2, columnspacing=1,
                labelcolor=medium)
