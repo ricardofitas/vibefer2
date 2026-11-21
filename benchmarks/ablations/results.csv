@@ -1,0 +1,28 @@
+comparison,device,baseline,candidate,workers,endpoint,n_observations_per_arm,baseline_time,candidate_time,throughput_change_pct,lower_observed_pct,upper_observed_pct,candidate_wins,method
+single_base_graph,RTX 3070,0.1 graph lookup,0.2 data-driven 32-step graph,1,seconds per proof,1,358.608873,186.391405,92.395607,,,,one matched input
+single_base_graph,RTX 3070,0.2 data-driven 32-step graph,0.2 data-driven graph plus carry fusion,1,seconds per proof,1,186.391405,185.402253,0.533516,,,,one matched input
+single_base_leaf,RTX 4060 Ti,0.1,0.2 carry fusion plus 128-step graph,1,seconds per proof,1,88.828690,81.893519,8.468522,,,,one matched input
+single_base_leaf,RTX 4060 Ti,0.2 carry fusion plus 128-step graph,0.2 carry fusion plus 128-step graph and warp leaf,1,seconds per proof,1,81.893519,80.299926,1.984552,,,,one matched input
+ti_isolated_fusion,RTX 4060 Ti,base,fusion,1,microseconds per square,2,20.178450,19.186450,5.170643,4.880233,5.461054,2,median of within-block throughput changes
+ti_graph,RTX 4060 Ti,mix32,mix128,1,microseconds per square,2,19.060100,18.987650,0.381587,0.308522,0.454653,2,median of within-block throughput changes
+ti_leaf,RTX 4060 Ti,mix128,warp128,1,microseconds per square,2,19.011750,18.496200,2.787227,2.536144,3.038311,2,median of within-block throughput changes
+MPS,RTX 3070,plain,MPS,1,microseconds per aggregate square,1,42.662354,46.215820,-7.688854,,,,throughput ratio of mean times at fixed worker count
+MPS,RTX 3070,plain,MPS,2,microseconds per aggregate square,1,77.039642,73.322906,5.068997,,,,throughput ratio of mean times at fixed worker count
+MPS,RTX 3070,plain,MPS,4,microseconds per aggregate square,1,79.456861,90.021546,-11.735730,,,,throughput ratio of mean times at fixed worker count
+MPS,RTX 4060,plain,MPS,2,microseconds per aggregate square,1,24.968424,20.607503,21.161812,,,,throughput ratio of mean times at fixed worker count
+MPS,RTX 4060,plain,MPS,3,microseconds per aggregate square,1,25.051479,19.064268,31.405405,,,,throughput ratio of mean times at fixed worker count
+MPS,RTX 4060,plain,MPS,4,microseconds per aggregate square,2,25.105827,18.809414,33.474796,,,,throughput ratio of mean times at fixed worker count
+MPS,RTX 4060,plain,MPS,6,microseconds per aggregate square,1,24.997452,18.824116,32.794826,,,,throughput ratio of mean times at fixed worker count
+packed exact,RTX 4060,stock,center9,3,microseconds per aggregate square,6,24.335458,22.656260,5.637520,-17.276709,26.434109,4,median of within-block throughput changes
+packed exact,RTX 4060,stock,center8,3,microseconds per aggregate square,6,24.335458,17.521875,24.914863,-3.512147,59.400758,5,median of within-block throughput changes
+packed exact,RTX 4060,center9,center8,3,microseconds per aggregate square,6,22.656260,17.521875,21.381338,-7.634321,68.500486,5,median of within-block throughput changes
+packed q44,RTX 4060,stock,center9,3,microseconds per aggregate square,6,27.349065,33.758993,-16.034953,-22.787105,-3.663175,0,median of within-block throughput changes
+packed q44,RTX 4060,stock,center8,3,microseconds per aggregate square,6,27.349065,28.759130,-6.589886,-16.296488,17.449827,1,median of within-block throughput changes
+packed q44,RTX 4060,center9,center8,3,microseconds per aggregate square,6,33.758993,28.759130,9.347028,-3.155071,35.684332,5,median of within-block throughput changes
+third channel,RTX 4060 Ti,stock,integer,6,microseconds per aggregate square,6,13.385807,13.558509,-1.336946,-1.398664,-1.236673,0,median of within-block throughput changes
+third channel,RTX 4060 Ti,stock,fp32,6,microseconds per aggregate square,6,13.385807,22.925913,-41.640535,-41.861880,-41.604132,0,median of within-block throughput changes
+third channel,RTX 4060 Ti,integer,fp32,6,microseconds per aggregate square,6,13.558509,22.925913,-40.863721,-41.042877,-40.793274,0,median of within-block throughput changes
+alternative kernel,RTX 4060 Ti,stock,boundary 16,6,microseconds per aggregate square,8,12.974479,24.480956,-47.021348,-47.275014,-46.840825,0,median of within-block throughput changes
+alternative kernel,RTX 4060 Ti,stock,boundary 32,6,microseconds per aggregate square,8,12.993434,27.751249,-53.180361,-53.231319,-53.097752,0,median of within-block throughput changes
+alternative kernel,RTX 4060 Ti,stock,cupqc 128,6,microseconds per aggregate square,8,12.978872,28.813504,-54.978391,-55.465259,-54.917189,0,median of within-block throughput changes
+alternative kernel,RTX 4060 Ti,stock,cupqc 256,6,microseconds per aggregate square,8,13.009269,28.891214,-55.012897,-55.309494,-54.757577,0,median of within-block throughput changes
